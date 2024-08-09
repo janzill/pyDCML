@@ -379,11 +379,17 @@ class TorchMXL(nn.Module):
         loglik = loglik.sum()
 
         # ----- define priors -----
-        alpha_prior = td.MultivariateNormal(torch.zeros(self.num_fixed_params, device=self.device),
+        #alpha_mu_initial_values = torch.zeros(self.num_fixed_params, device=self.device)
+        alpha_mu_initial_values = torch.from_numpy(
+            np.array(self.dcm_spec.fixed_params_initial_values, dtype=self.numpy_dtype))  # TODO device
+        alpha_prior = td.MultivariateNormal(alpha_mu_initial_values,
                                             scale_tril=torch.tril(
                                                 1 * torch.eye(self.num_fixed_params, device=self.device)))
 
-        zeta_prior = td.MultivariateNormal(torch.zeros(self.num_mixed_params, device=self.device),
+        #zeta_mu_initial_values = torch.zeros(self.num_mixed_params, device=self.device)
+        zeta_mu_initial_values = torch.from_numpy(
+            np.array(self.dcm_spec.mixed_params_initial_values, dtype=self.numpy_dtype))  # TODO device
+        zeta_prior = td.MultivariateNormal(zeta_mu_initial_values,
                                            scale_tril=torch.tril(
                                                1 * torch.eye(self.num_mixed_params, device=self.device)))
 
