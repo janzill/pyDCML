@@ -9,7 +9,7 @@ from matplotlib import pyplot as plt
 
 
 class TorchMXL(nn.Module):
-    def __init__(self, dcm_dataset, batch_size, use_cuda=True, use_inference_net=False):
+    def __init__(self, dcm_dataset, batch_size, use_cuda=True, use_inference_net=False, use_double=False):
         """
         Initializes the TorchMXL object.
 
@@ -47,15 +47,33 @@ class TorchMXL(nn.Module):
 
         self.device = torch.device("cuda:0" if use_cuda and torch.cuda.is_available() else "cpu")
 
+        if use_double:
+            self.use_double = True
+            torch.set_default_dtype(torch.float64)
+            self.torch_dtype = torch.float64
+            self.numpy_dtype = np.float64
+        else:
+            self.use_double = False
+            torch.set_default_dtype(torch.float32)
+            self.torch_dtype = torch.float32
+            self.numpy_dtype = np.float32
+
         # prepare data for running inference
-        self.train_x = torch.tensor(self.alt_attributes, dtype=torch.float)  # .to(self.device)
-        self.context_info = torch.tensor(self.context, dtype=torch.float)  # .to(self.device)
+        self.train_x = torch.tensor(self.alt_attributes, dtype=self.torch_dtype)  # .to(self.device)
+        self.context_info = torch.tensor(self.context, dtype=self.torch_dtype)  # .to(self.device)
         self.train_y = torch.tensor(self.choices, dtype=torch.int)  # .to(self.device)
         self.alt_av = torch.from_numpy(self.alt_availability)  # .to(self.device)
         self.alt_av_mat = self.alt_availability.copy()
         self.alt_av_mat[np.where(self.alt_av_mat == 0)] = -1e9
         self.alt_av_mat -= 1
-        self.alt_av_mat_cuda = torch.from_numpy(self.alt_av_mat).float()  # .to(self.device)
+
+        if self.use_double:
+            self.alt_av_mat_cuda = torch.from_numpy(self.alt_av_mat).double()  # .to(self.device)
+        else:
+            if self.use_double:
+                self.alt_av_mat_cuda = torch.from_numpy(self.alt_av_mat).double()  # .to(self.device)
+            else:
+                self.alt_av_mat_cuda = torch.from_numpy(self.alt_av_mat).float()  # .to(self.device)
         self.zeros_mat = torch.zeros(self.num_menus, self.batch_size, self.num_alternatives).to(
             self.device)  # auxiliary matrix for model
         self.alt_ids_cuda = torch.from_numpy(
@@ -75,14 +93,18 @@ class TorchMXL(nn.Module):
 
     def initialize_variational_distribution_q(self, ):
         # q(alpha) - initialize mean and lower-cholesky factor of the covariance matrix
-        self.alpha_mu = nn.Parameter(torch.zeros(self.num_fixed_params))
+        #alpha_mu_initial_values = torch.zeros(self.num_fixed_params)
+        alpha_mu_initial_values = torch.from_numpy(np.array(self.dcm_spec.fixed_params_initial_values, dtype=self.numpy_dtype))
+        self.alpha_mu = nn.Parameter(alpha_mu_initial_values)
         self.alpha_cov_diag = nn.Parameter(torch.ones(self.num_fixed_params))
         self.alpha_cov_offdiag = nn.Parameter(
             torch.zeros(int((self.num_fixed_params * (self.num_fixed_params - 1)) / 2)))
         self.tril_indices_alpha = torch.tril_indices(row=self.num_fixed_params, col=self.num_fixed_params, offset=-1)
 
         # q(zeta) - initialize mean and lower-cholesky factor of the covariance matrix
-        self.zeta_mu = nn.Parameter(torch.zeros(self.num_mixed_params))
+        #zeta_mu_initial_values = torch.zeros(self.num_mixed_params)
+        zeta_mu_initial_values = torch.from_numpy(np.array(self.dcm_spec.mixed_params_initial_values, dtype=self.numpy_dtype))
+        self.zeta_mu = nn.Parameter(zeta_mu_initial_values)
         self.zeta_cov_diag = nn.Parameter(torch.ones(self.num_mixed_params))
         self.zeta_cov_offdiag = nn.Parameter(
             torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2)))
@@ -179,9 +201,12 @@ class TorchMXL(nn.Module):
         if self.use_inference_net:
             # prepare input data for inference neural network
             one_hot = torch.zeros(self.num_resp, self.num_menus, self.num_alternatives, device=self.device,
-                                  dtype=torch.float)
+                                  dtype=self.torch_dtype)
             one_hot = one_hot.scatter(2, obs_choices.unsqueeze(2).long(), 1)
-            inference_data = torch.cat([one_hot, alt_attr, alt_avail.float()], dim=-1)
+            if self.use_double:
+                inference_data = torch.cat([one_hot, alt_attr, alt_avail.double()], dim=-1)
+            else:
+                inference_data = torch.cat([one_hot, alt_attr, alt_avail.float()], dim=-1)
             inference_data = inference_data.flatten(1, 2).unsqueeze(1)
 
             # compute the hidden units
@@ -279,7 +304,7 @@ class TorchMXL(nn.Module):
                     next_mixed += 1
 
                 else:
-                    raise Exception("This should not happen!!")
+                    raise Exception("This should not happen - check if effect names are unique.")
 
             reordered_pars = torch.cat(reordered_pars, dim=-1)
 

@@ -85,8 +85,9 @@ class TransformedVariable(ObservedVariable):
 
 class FixedEffect(Variable):
 
-    def __init__(self, name):
+    def __init__(self, name, initial_value=0.0):
         super().__init__(name)
+        self.initial_value = initial_value
 
     def __str__(self):
         return self.name + '[FixedEffect]'
@@ -94,8 +95,9 @@ class FixedEffect(Variable):
 
 class RandomEffect(Variable):
 
-    def __init__(self, name):
+    def __init__(self, name, initial_value=0.0):
         super().__init__(name)
+        self.initial_value = initial_value
 
     def __str__(self):
         return self.name + '[RandomEffect]'
@@ -138,6 +140,8 @@ class Specification():
         self.mixed_param_ids = []  # IDs of parameters to be treated with a Mixed Logit formulation
         self.fixed_param_names = []
         self.fixed_param_ids = []
+        self.fixed_params_initial_values = []
+        self.mixed_params_initial_values = []
         next_param_id = 0
         next_alt_id = 0
         for alt in self.utilities:
@@ -165,11 +169,13 @@ class Specification():
                             if factor.name not in self.fixed_param_names:
                                 self.fixed_param_names.append(factor.name)
                                 self.fixed_param_ids.append(self.random_var_to_param_id[factor])
+                                self.fixed_params_initial_values.append(factor.initial_value)
                         elif type(factor) == RandomEffect:
                             random_effects.append(factor)
                             if factor.name not in self.mixed_param_names:
                                 self.mixed_param_names.append(factor.name)
                                 self.mixed_param_ids.append(self.random_var_to_param_id[factor])
+                                self.mixed_params_initial_values.append(factor.initial_value)
                     else:
                         attributes.append(factor)
                         self.columns_to_extract += [factor]
