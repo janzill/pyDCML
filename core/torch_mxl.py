@@ -120,7 +120,11 @@ class TorchMXL(nn.Module):
             torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2)))
 
         # q(beta_n) - initialize mean and lower-cholesky factor of the covariance matrix
-        self.beta_mu = nn.Parameter(torch.zeros(self.num_resp, self.num_mixed_params))
+        #beta_mu_intial_values = torch.zeros(self.num_resp, self.num_mixed_params)
+        beta_mu_intial_values = torch.from_numpy(
+            np.tile(np.array(self.dcm_spec.mixed_params_initial_values, dtype=self.numpy_dtype), (self.num_resp, 1))
+        )
+        self.beta_mu = nn.Parameter(beta_mu_intial_values)
         self.beta_cov_diag = nn.Parameter(torch.ones(self.num_mixed_params))
         self.beta_cov_offdiag = nn.Parameter(
             torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2)))
