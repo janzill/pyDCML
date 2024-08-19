@@ -469,6 +469,8 @@ class TorchMXL(nn.Module):
         alpha_errors = []
         beta_errors = []
         betaInd_errors = []
+
+        log_msg = []  # TODO: quick hack for cluster, set up proper logging
         for epoch in range(num_epochs):
             permutation = torch.randperm(self.num_resp)
 
@@ -497,6 +499,7 @@ class TorchMXL(nn.Module):
                 if not epoch % 100:
                     msg = "[Epoch %5d] ELBO: %.0f; Loglik: %.0f; Acc.: %.3f" % (
                     epoch, elbo.item(), self.loglik, self.acc)
+                    log_msg.append(msg)
                     if np.all(true_alpha != None):
                         alpha_rmse = np.sqrt(np.mean((true_alpha - self.alpha_mu.detach().cpu().numpy()) ** 2)) if len(
                             true_alpha) > 0 else np.inf
@@ -535,6 +538,7 @@ class TorchMXL(nn.Module):
         results["ELBO"] = elbo.item()
         results["Loglikelihood"] = self.loglik.item()
         results["Accuracy"] = self.acc.item()
+        results['log'] = log_msg
 
         # show quick summary of results
         if np.all(true_alpha != None): print("True alpha:", true_alpha)
