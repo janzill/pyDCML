@@ -70,10 +70,7 @@ class TorchMXL(nn.Module):
         if self.use_double:
             self.alt_av_mat_cuda = torch.from_numpy(self.alt_av_mat).double()  # .to(self.device)
         else:
-            if self.use_double:
-                self.alt_av_mat_cuda = torch.from_numpy(self.alt_av_mat).double()  # .to(self.device)
-            else:
-                self.alt_av_mat_cuda = torch.from_numpy(self.alt_av_mat).float()  # .to(self.device)
+            self.alt_av_mat_cuda = torch.from_numpy(self.alt_av_mat).float()  # .to(self.device)
         self.zeros_mat = torch.zeros(self.num_menus, self.batch_size, self.num_alternatives).to(
             self.device)  # auxiliary matrix for model
         self.alt_ids_cuda = torch.from_numpy(
@@ -440,7 +437,7 @@ class TorchMXL(nn.Module):
 
         return elbo
 
-    def infer(self, num_epochs=10000, true_alpha=None, true_beta=None, true_beta_resp=None):
+    def infer(self, num_epochs=10000, learning_rate=1e-2, true_alpha=None, true_beta=None, true_beta_resp=None):
         """
         Performs variational inference (amortized variational inference if use_inference_net is set to True).
 
@@ -464,7 +461,7 @@ class TorchMXL(nn.Module):
 
         # print("Initial ELBO value: %.1f" % self.loss(self.train_x, self.context_info, self.train_y, self.alt_av_mat_cuda, self.mask_cuda, self.alt_ids_cuda).item())
 
-        optimizer = Adam(self.parameters(), lr=1e-2)
+        optimizer = Adam(self.parameters(), lr=learning_rate)
 
         self.train()  # enable training mode
 
