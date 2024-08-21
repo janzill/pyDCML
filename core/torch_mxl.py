@@ -437,7 +437,7 @@ class TorchMXL(nn.Module):
 
         return elbo
 
-    def infer(self, num_epochs=10000, learning_rate=1e-2, true_alpha=None, true_beta=None, true_beta_resp=None):
+    def infer(self, num_epochs=10000, learning_rate=1e-2, return_all_results=False, true_alpha=None, true_beta=None, true_beta_resp=None):
         """
         Performs variational inference (amortized variational inference if use_inference_net is set to True).
 
@@ -469,6 +469,8 @@ class TorchMXL(nn.Module):
         alpha_errors = []
         beta_errors = []
         betaInd_errors = []
+
+        all_results = [] # TODO: quick hack for looking at results over epochs, set up proper monitoring
 
         log_msg = []  # TODO: quick hack for cluster, set up proper logging
         for epoch in range(num_epochs):
@@ -519,6 +521,23 @@ class TorchMXL(nn.Module):
 
                     print(msg)
 
+                if return_all_results:
+                    results_this_epoch = {}
+                    results_this_epoch["alpha_mu"] = self.alpha_mu.detach().cpu().numpy()
+                    results_this_epoch["zeta_mu"] = self.zeta_mu.detach().cpu().numpy()
+                    results_this_epoch['L_omega_diag_mu'] = self.L_omega_diag_mu.detach().cpu().numpy()
+                    results_this_epoch['L_omega_offdiag_mu'] = self.L_omega_offdiag_mu.detach().cpu().numpy()
+                    results_this_epoch['L_omega_diag_sigma'] = self.L_omega_diag_sigma.detach().cpu().numpy()
+                    results_this_epoch['L_omega_offdiag_sigma'] = self.L_omega_offdiag_sigma.detach().cpu().numpy()
+                    results_this_epoch['zeta_cov_diag'] = self.zeta_cov_diag.detach().cpu().numpy()
+                    results_this_epoch['zeta_cov_offdiag'] = self.zeta_cov_offdiag.detach().cpu().numpy()
+                    results_this_epoch['alpha_cov_diag'] = self.alpha_cov_diag.detach().cpu().numpy()
+                    results_this_epoch['alpha_cov_offdiag'] = self.alpha_cov_offdiag.detach().cpu().numpy()
+                    results_this_epoch["ELBO"] = elbo.item()
+                    results_this_epoch["Loglikelihood"] = self.loglik.item()
+                    results_this_epoch["Accuracy"] = self.acc.item()
+                    all_results.append(results_this_epoch)
+
         toc = time.time() - tic
         print('Elapsed time:', toc, '\n')
 
@@ -563,7 +582,7 @@ class TorchMXL(nn.Module):
             plt.legend(['alpha rmse', 'beta_rmse', 'beta_resps_rmse'])
             plt.show();
 
-        return results
+        return results, all_results
 
     def gather_parameters_for_MNL_kernel(self, alpha, beta):
         next_fixed = 0
