@@ -99,15 +99,15 @@ class TorchMXLMSLE(nn.Module):
         # and https://pytorch.org/docs/stable/generated/torch.quasirandom.SobolEngine.html
         betas = q_zeta.rsample(sample_shape=torch.Size([self.num_resp, self.num_draws]))
 
-        sampled_probs = torch.zeros([self.num_menus, self.num_resp], device=self.device)
-        torch.manual_seed(234673286)
+        sampled_probs = torch.zeros(self.num_resp, device=self.device, dtype=self.torch_dtype)
+        torch.manual_seed(234673286)  # TODO: make parameter of infer
 
         for i in range(self.num_draws):
             beta_resp = self.gather_parameters_for_MNL_kernel(self.alpha_mu, betas[:, i], indices)
             utilities = self.compute_utilities(beta_resp, alt_attr, alt_avail, alt_ids)
             probs = td.Categorical(logits=utilities).log_prob(obs_choices.transpose(0, 1)).exp()  # log_prob works with mask
-            probs = torch.where(obs_mask.T, probs, probs.new_zeros(()))  # use mask to filter out missing menus
-            sampled_probs += probs   #.product(axis=0)  # multiply over menus - no, can sum over everything, right?
+            probs = torch.where(obs_mask.T, probs, probs.new_ones(()))  # use mask to filter out missing menus
+            sampled_probs += probs.prod(axis=0)  # multiply probs over menus
 
         sampled_probs /= self.num_draws
         loglik_total = sampled_probs.log().sum()
