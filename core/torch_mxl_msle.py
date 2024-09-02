@@ -133,13 +133,13 @@ class TorchMXLMSLE(nn.Module):
         return batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices
 
 
-    def infer(self, return_all_results=False, use_lfbgs=True, num_epochs=1):
+    def infer(self, return_all_results=False, use_lfbgs=True, num_epochs=1, max_iter=50):
  
         self.to(self.device)
 
         if use_lfbgs:
             print("Using LFBGS")
-            optimizer = LBFGS(self.parameters(), max_iter=50)
+            optimizer = LBFGS(self.parameters(), max_iter=max_iter)
             # tolerance_grad=1e-9, tolerance_change=1e-12, history_size=100
             # line_search_fn="strong_wolfe")
         else:
