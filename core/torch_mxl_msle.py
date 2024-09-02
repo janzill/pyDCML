@@ -184,12 +184,11 @@ class TorchMXLMSLE(nn.Module):
             if use_lfbgs:
                 optimizer.step(closure)
             else:
-                # optimizer.zero_grad()
-                # #batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices = self.model_inputs()
-                # loglik = self.loglikelihood(batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices)
-                # loglik.backward()
-                # optimizer.step()
-                pass
+                optimizer.zero_grad()
+                #batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices = self.model_inputs()
+                loglik = self.loglikelihood(batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices)
+                loglik.backward()
+                optimizer.step()
 
             if not epoch % 10:
                print("[Epoch %5d] Loglik: %.1f" % (epoch, self.loglik_val))  # , acc: %.3f, self.acc))
