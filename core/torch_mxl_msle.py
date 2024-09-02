@@ -41,7 +41,7 @@ class TorchMXLMSLE(nn.Module):
             self.torch_dtype = torch.float32
             self.numpy_dtype = np.float32
 
-        self.num_draws = num_draws
+        self.num_draws = int(num_draws)
 
         # prepare data for running inference
         self.train_x = torch.tensor(self.alt_attributes, dtype=self.torch_dtype)  # .to(self.device)
