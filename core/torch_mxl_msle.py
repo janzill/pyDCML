@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.distributions as td
-from torch.optim import Adam
+from torch.optim import Adam, LBFGS
 import numpy as np
 import time
 
@@ -75,10 +75,6 @@ class TorchMXLMSLE(nn.Module):
         # fixed params
         alpha_mu_initial_values = torch.from_numpy(np.array(self.dcm_spec.fixed_params_initial_values, dtype=self.numpy_dtype))
         self.alpha_mu = nn.Parameter(alpha_mu_initial_values)
-        # self.alpha_cov_diag = nn.Parameter(torch.ones(self.num_fixed_params))
-        # self.alpha_cov_offdiag = nn.Parameter(
-        #    torch.zeros(int((self.num_fixed_params * (self.num_fixed_params - 1)) / 2)))
-        # self.tril_indices_alpha = torch.tril_indices(row=self.num_fixed_params, col=self.num_fixed_params, offset=-1)
 
         # mixed params
         zeta_mu_initial_values = torch.from_numpy(np.array(self.dcm_spec.mixed_params_initial_values, dtype=self.numpy_dtype))
@@ -86,12 +82,12 @@ class TorchMXLMSLE(nn.Module):
         self.zeta_cov_diag = nn.Parameter(torch.ones(self.num_mixed_params))
         # NO CORRELATIONS INITIALLY
         self.zeta_cov_offdiag = torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2))
-        # self.zeta_cov_offdiag = nn.Parameter(
-        #     torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2)))
+        #self.zeta_cov_offdiag = nn.Parameter(
+        #    torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2)))
         self.tril_indices_zeta = torch.tril_indices(row=self.num_mixed_params, col=self.num_mixed_params, offset=-1)
 
 
-    def loglik(self, alt_attr, context_attr, obs_choices, alt_avail, obs_mask, alt_ids, indices):
+    def loglikelihood(self, alt_attr, context_attr, obs_choices, alt_avail, obs_mask, alt_ids, indices):
 
         # normal to draw variables from
         zeta_cov_tril = torch.zeros((self.num_mixed_params, self.num_mixed_params), device=self.device)
@@ -99,76 +95,113 @@ class TorchMXLMSLE(nn.Module):
         zeta_cov_tril += torch.diag_embed(self.softplus(self.zeta_cov_diag))
         q_zeta = td.MultivariateNormal(self.zeta_mu, scale_tril=torch.tril(zeta_cov_tril))
 
-        # todo: add draws as dimensions and map over for efficiency
-        loglik_total = 0.0
+        betas = q_zeta.rsample(sample_shape=torch.Size([self.num_resp, self.num_draws]))
+
+        sampled_probs = torch.zeros([self.num_menus, self.num_resp], device=self.device)  #, requires_grad=True)          
+        torch.manual_seed(234673286)
+
         for i in range(self.num_draws):
-            # draw num_person times from this to create individual params
-            beta = q_zeta.rsample(sample_shape=torch.Size([self.num_resp]))
-            # ----- gather paramters for computing the utilities -----
-            beta_resp = self.gather_parameters_for_MNL_kernel(self.alpha_mu, beta, indices)
-            # ----- compute utilities -----
+            beta_resp = self.gather_parameters_for_MNL_kernel(self.alpha_mu, betas[:, i], indices)
             utilities = self.compute_utilities(beta_resp, alt_attr, alt_avail, alt_ids)
-            # ----- (expected) log-likelihood -----
-            loglik = td.Categorical(logits=utilities).log_prob(obs_choices.transpose(0, 1))
-            loglik = torch.where(obs_mask.T, loglik, loglik.new_zeros(()))  # use mask to filter out missing menus
-            loglik = loglik.sum()
-            loglik_total += loglik
+            probs = td.Categorical(logits=utilities).log_prob(obs_choices.transpose(0, 1)).exp()  # log_prob works with mask
+            probs = torch.where(obs_mask.T, probs, probs.new_zeros(()))  # use mask to filter out missing menus
+            sampled_probs += probs   #.product(axis=0)  # multiply over menus - no, can sum over everything, right?
 
-        loglik_total /= self.num_draws
-        # compute accuracy based on utilities
-        # acc = utilities.argmax(-1) == obs_choices.transpose(0, 1)
-        # acc = torch.where(obs_mask.T, acc, acc.new_zeros(()))
-        # acc = acc.sum() / obs_mask.sum()
+        sampled_probs /= self.num_draws
+        loglik_total = sampled_probs.log().sum()
 
-        return - loglik_total
+        self.loglik_val = loglik_total.item()
+        print(f"Mean loglike = {self.loglik_val}")
+
+        return -loglik_total
 
 
-    def infer(self, num_epochs=10000, learning_rate=1e-2, return_all_results=False):
+    def model_inputs(self):
+        #indices = torch.randperm(self.num_resp)
+        indices = torch.from_numpy(np.arange(self.num_resp))
+        batch_x, batch_context, batch_y = self.train_x[indices], self.context_info[indices], self.train_y[
+            indices]
+        batch_alt_av_mat, batch_mask_cuda, batch_alt_ids = self.alt_av_mat_cuda[indices], self.mask_cuda[
+            indices], self.alt_ids_cuda[indices]
+
+        batch_x = batch_x.to(self.device)
+        batch_context = batch_context.to(self.device)
+        batch_y = batch_y.to(self.device)
+        batch_alt_av_mat = batch_alt_av_mat.to(self.device)
+        batch_mask_cuda = batch_mask_cuda.to(self.device)
+
+        return batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices
+
+
+    def infer(self, num_epochs=10000, learning_rate=1e-2, return_all_results=False, use_lfbgs=True):
  
         self.to(self.device)
 
-        optimizer = Adam(self.parameters(), lr=learning_rate)
+        if use_lfbgs:
+            print("Using LFBGS")
+            optimizer = LBFGS(self.parameters(), max_iter=50)
+            # tolerance_grad=1e-9, tolerance_change=1e-12, history_size=100
+            # line_search_fn="strong_wolfe")
+            #lr=learning_rate , 
+        else:
+            print("Using ADAM")
+            # use lr 1e-2
+            optimizer = Adam(self.parameters(), lr=learning_rate)
 
         self.train()  # enable training mode
 
         tic = time.time()
 
         all_results = [] # TODO: quick hack for looking at results over epochs, set up proper monitoring
+        
+        batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices = self.model_inputs()
 
-        for epoch in range(num_epochs):
-            permutation = torch.randperm(self.num_resp)
+        def closure():
+            optimizer.zero_grad()
+            objective = self.loglikelihood(batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices)
+            objective.backward()
+            return objective
 
-            for i in range(0, self.num_resp, self.batch_size):
+        ll = self.loglikelihood(batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices)
+        print(f"Initial log-likelihood = -{ll.item()}")
+        
+        for epoch in range(num_epochs):            
+            #permutation = torch.randperm(self.num_resp)
 
-                indices = permutation[i:i + self.batch_size]
-                batch_x, batch_context, batch_y = self.train_x[indices], self.context_info[indices], self.train_y[
-                    indices]
-                batch_alt_av_mat, batch_mask_cuda, batch_alt_ids = self.alt_av_mat_cuda[indices], self.mask_cuda[
-                    indices], self.alt_ids_cuda[indices]
+            #for i in range(0, self.num_resp, self.batch_size):
+            #indices = permutation[i:i + self.batch_size]
+            # batch_x, batch_context, batch_y = self.train_x[indices], self.context_info[indices], self.train_y[
+            #     indices]
+            # batch_alt_av_mat, batch_mask_cuda, batch_alt_ids = self.alt_av_mat_cuda[indices], self.mask_cuda[
+            #     indices], self.alt_ids_cuda[indices]
 
-                batch_x = batch_x.to(self.device)
-                batch_context = batch_context.to(self.device)
-                batch_y = batch_y.to(self.device)
-                batch_alt_av_mat = batch_alt_av_mat.to(self.device)
-                batch_mask_cuda = batch_mask_cuda.to(self.device)
+            # batch_x = batch_x.to(self.device)
+            # batch_context = batch_context.to(self.device)
+            # batch_y = batch_y.to(self.device)
+            # batch_alt_av_mat = batch_alt_av_mat.to(self.device)
+            # batch_mask_cuda = batch_mask_cuda.to(self.device)
 
-                optimizer.zero_grad()
-                loglik = self.loglik(batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids,
-                                 indices)
-                loglik.backward()
-                optimizer.step()
+            if use_lfbgs:
+                optimizer.step(closure)
+            else:
+                # optimizer.zero_grad()
+                # #batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices = self.model_inputs()
+                # loglik = self.loglikelihood(batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices)
+                # loglik.backward()
+                # optimizer.step()
+                pass
 
-                if not epoch % 10:
-                    print("[Epoch %5d] Loglik: %.1f" % (epoch, loglik.item()))
+            if not epoch % 10:
+               print("[Epoch %5d] Loglik: %.1f" % (epoch, self.loglik_val))  # , acc: %.3f, self.acc))
 
-                if return_all_results:
-                    results_this_epoch = {}
-                    results_this_epoch["alpha_mu"] = self.alpha_mu.detach().cpu().numpy().tolist()
-                    results_this_epoch["zeta_mu"] = self.zeta_mu.detach().cpu().numpy().tolist()
-                    results_this_epoch['zeta_cov_diag'] = self.zeta_cov_diag.detach().cpu().numpy().tolist()
-                    results_this_epoch['zeta_cov_offdiag'] = self.zeta_cov_offdiag.detach().cpu().numpy().tolist()
-                    results_this_epoch["Loglikelihood"] = loglik.item()
-                    all_results.append(results_this_epoch)
+            if return_all_results:
+                results_this_epoch = {}
+                results_this_epoch["alpha_mu"] = self.alpha_mu.detach().cpu().numpy().tolist()
+                results_this_epoch["zeta_mu"] = self.zeta_mu.detach().cpu().numpy().tolist()
+                results_this_epoch['zeta_cov_diag'] = self.zeta_cov_diag.detach().cpu().numpy().tolist()
+                results_this_epoch['zeta_cov_offdiag'] = self.zeta_cov_offdiag.detach().cpu().numpy().tolist()
+                results_this_epoch["Loglikelihood"] = self.loglik_val  #loglik.item()
+                all_results.append(results_this_epoch)
 
         toc = time.time() - tic
         print('Elapsed time:', toc, '\n')
@@ -183,11 +216,11 @@ class TorchMXLMSLE(nn.Module):
             results['zeta_cov_diag'] = self.zeta_cov_diag.detach().cpu().numpy()
             results['zeta_cov_offdiag'] = self.zeta_cov_offdiag.detach().cpu().numpy()
             results['zeta_names'] = self.dcm_spec.mixed_param_names
-        results["Loglikelihood"] = loglik.item()
+        results["Loglikelihood"] = self.loglik_val  #loglik.item()
         results['num_epochs'] = num_epochs
 
         # show quick summary of results
-        print(f"Loglik at end of training = {loglik.item():.1f}")
+        print(f"Loglik at end of training = {self.loglik_val:.1f}")
         # print("Est. alpha:", self.alpha_mu.detach().cpu().numpy())
         # for i in range(len(self.dcm_spec.fixed_param_names)):
         #     print("\t%s: %.3f" % (self.dcm_spec.fixed_param_names[i], results["Est. alpha"][i]))
