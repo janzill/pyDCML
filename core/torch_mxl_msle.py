@@ -42,6 +42,7 @@ class TorchMXLMSLE(nn.Module):
             self.numpy_dtype = np.float32
 
         self.num_draws = int(num_draws)
+        self.seed = 7777777
 
         # prepare data for running inference
         self.train_x = torch.tensor(self.alt_attributes, dtype=self.torch_dtype)  # .to(self.device)
@@ -80,10 +81,10 @@ class TorchMXLMSLE(nn.Module):
         zeta_mu_initial_values = torch.from_numpy(np.array(self.dcm_spec.mixed_params_initial_values, dtype=self.numpy_dtype))
         self.zeta_mu = nn.Parameter(zeta_mu_initial_values)
         self.zeta_cov_diag = nn.Parameter(torch.ones(self.num_mixed_params))
-        # NO CORRELATIONS INITIALLY
-        self.zeta_cov_offdiag = torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2))
-        #self.zeta_cov_offdiag = nn.Parameter(
-        #    torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2)))
+        # NO CORRELATIONS
+        #self.zeta_cov_offdiag = torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2))
+        self.zeta_cov_offdiag = nn.Parameter(
+            torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2)))
         self.tril_indices_zeta = torch.tril_indices(row=self.num_mixed_params, col=self.num_mixed_params, offset=-1)
 
 
@@ -100,7 +101,8 @@ class TorchMXLMSLE(nn.Module):
         betas = q_zeta.rsample(sample_shape=torch.Size([self.num_resp, self.num_draws]))
 
         sampled_probs = torch.zeros(self.num_resp, device=self.device, dtype=self.torch_dtype)
-        torch.manual_seed(234673286)  # TODO: make parameter of infer
+
+        torch.manual_seed(self.seed)
 
         for i in range(self.num_draws):
             beta_resp = self.gather_parameters_for_MNL_kernel(self.alpha_mu, betas[:, i], indices)
@@ -114,6 +116,10 @@ class TorchMXLMSLE(nn.Module):
 
         self.loglik_val = loglik_total.item()
         print(f"Mean loglike = {self.loglik_val}")
+        print(f"alpha = {self.alpha_mu.detach().cpu().numpy().tolist()}")
+        print(f"zeta = {self.zeta_mu.detach().cpu().numpy().tolist()}")
+        print(f"zeta_cov_diag = {self.zeta_cov_diag.detach().cpu().numpy().tolist()}")
+        print(f"zeta_cov_offdiag = {self.zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
 
         return -loglik_total
 
@@ -135,7 +141,7 @@ class TorchMXLMSLE(nn.Module):
         return batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices
 
 
-    def infer(self, return_all_results=False, use_lfbgs=True, num_epochs=1, max_iter=50):
+    def infer(self, return_all_results=False, use_lfbgs=True, num_epochs=1, max_iter=50, seed=None):
  
         self.to(self.device)
 
@@ -147,6 +153,9 @@ class TorchMXLMSLE(nn.Module):
         else:
             print("Using ADAM - not recommended for MSLE")
             optimizer = Adam(self.parameters(), lr=1e-2)
+        
+        if seed is not None:
+            self.seed = int(seed)
 
         self.train()  # enable training mode
 
