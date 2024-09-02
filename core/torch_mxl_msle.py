@@ -133,7 +133,7 @@ class TorchMXLMSLE(nn.Module):
         return batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices
 
 
-    def infer(self, num_epochs=10000, learning_rate=1e-2, return_all_results=False, use_lfbgs=True):
+    def infer(self, return_all_results=False, use_lfbgs=True, num_epochs=1):
  
         self.to(self.device)
 
@@ -142,11 +142,9 @@ class TorchMXLMSLE(nn.Module):
             optimizer = LBFGS(self.parameters(), max_iter=50)
             # tolerance_grad=1e-9, tolerance_change=1e-12, history_size=100
             # line_search_fn="strong_wolfe")
-            #lr=learning_rate , 
         else:
-            print("Using ADAM")
-            # use lr 1e-2
-            optimizer = Adam(self.parameters(), lr=learning_rate)
+            print("Using ADAM - not recommended for MSLE")
+            optimizer = Adam(self.parameters(), lr=1e-2)
 
         self.train()  # enable training mode
 
@@ -165,33 +163,17 @@ class TorchMXLMSLE(nn.Module):
         ll = self.loglikelihood(batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices)
         print(f"Initial log-likelihood = -{ll.item()}")
         
-        for epoch in range(num_epochs):            
-            #permutation = torch.randperm(self.num_resp)
-
-            #for i in range(0, self.num_resp, self.batch_size):
-            #indices = permutation[i:i + self.batch_size]
-            # batch_x, batch_context, batch_y = self.train_x[indices], self.context_info[indices], self.train_y[
-            #     indices]
-            # batch_alt_av_mat, batch_mask_cuda, batch_alt_ids = self.alt_av_mat_cuda[indices], self.mask_cuda[
-            #     indices], self.alt_ids_cuda[indices]
-
-            # batch_x = batch_x.to(self.device)
-            # batch_context = batch_context.to(self.device)
-            # batch_y = batch_y.to(self.device)
-            # batch_alt_av_mat = batch_alt_av_mat.to(self.device)
-            # batch_mask_cuda = batch_mask_cuda.to(self.device)
-
+        for epoch in range(num_epochs):
             if use_lfbgs:
                 optimizer.step(closure)
             else:
                 optimizer.zero_grad()
-                #batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices = self.model_inputs()
                 loglik = self.loglikelihood(batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices)
                 loglik.backward()
                 optimizer.step()
 
             if not epoch % 10:
-               print("[Epoch %5d] Loglik: %.1f" % (epoch, self.loglik_val))  # , acc: %.3f, self.acc))
+                print("[Epoch %5d] Loglik: %.1f" % (epoch, self.loglik_val))  # , acc: %.3f, self.acc))
 
             if return_all_results:
                 results_this_epoch = {}
@@ -218,17 +200,7 @@ class TorchMXLMSLE(nn.Module):
         results["Loglikelihood"] = self.loglik_val  #loglik.item()
         results['num_epochs'] = num_epochs
 
-        # show quick summary of results
-        print(f"Loglik at end of training = {self.loglik_val:.1f}")
-        # print("Est. alpha:", self.alpha_mu.detach().cpu().numpy())
-        # for i in range(len(self.dcm_spec.fixed_param_names)):
-        #     print("\t%s: %.3f" % (self.dcm_spec.fixed_param_names[i], results["Est. alpha"][i]))
-        # print()
-        # if self.dcm_spec.model_type != 'MNL':
-        #     print("Est. zeta:", self.zeta_mu.detach().cpu().numpy())
-        #     for i in range(len(self.dcm_spec.mixed_param_names)):
-        #         print("\t%s: %.3f" % (self.dcm_spec.mixed_param_names[i], results["Est. zeta"][i]))
-        #     print()
+        print(f"Loglikelihood at end of training = {self.loglik_val:.1f}")
 
         return results, all_results
 
