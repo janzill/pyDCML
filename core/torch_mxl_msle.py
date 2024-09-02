@@ -95,9 +95,11 @@ class TorchMXLMSLE(nn.Module):
         zeta_cov_tril += torch.diag_embed(self.softplus(self.zeta_cov_diag))
         q_zeta = td.MultivariateNormal(self.zeta_mu, scale_tril=torch.tril(zeta_cov_tril))
 
+        # TODO: look into better coverage, e.g. https://github.com/pytorch/botorch/blob/main/botorch/sampling/qmc.py
+        # and https://pytorch.org/docs/stable/generated/torch.quasirandom.SobolEngine.html
         betas = q_zeta.rsample(sample_shape=torch.Size([self.num_resp, self.num_draws]))
 
-        sampled_probs = torch.zeros([self.num_menus, self.num_resp], device=self.device)  #, requires_grad=True)          
+        sampled_probs = torch.zeros([self.num_menus, self.num_resp], device=self.device)
         torch.manual_seed(234673286)
 
         for i in range(self.num_draws):
