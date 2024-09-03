@@ -1,9 +1,58 @@
+import time
+import math
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.distributions as td
 from torch.optim import Adam, LBFGS
-import numpy as np
-import time
+from torch.quasirandom import SobolEngine
+
+
+# https://github.com/pytorch/botorch/blob/main/botorch/sampling/qmc.py
+class NormalQMCEngine:
+    def __init__(self, d, seed = None, inv_transform = False):
+        self._d = d
+        self._seed = seed
+        self._inv_transform = inv_transform
+        if inv_transform:
+            sobol_dim = d
+        else:
+            # to apply Box-Muller, we need an even number of dimensions
+            sobol_dim = 2 * math.ceil(d / 2)
+        self._sobol_engine = SobolEngine(dimension=sobol_dim, scramble=True, seed=seed)
+
+    def draw(self, n = 1, dtype = None):
+        r"""Draw `n` qMC samples from the standard Normal.
+
+        Args:
+            n: The number of samples to draw. As a best practice, use powers of 2.
+            out: An option output tensor. If provided, draws are put into this
+                tensor, and the function returns None.
+            dtype: The desired torch data type. If None, uses `torch.get_default_dtype()`.
+
+        Returns:
+            A `n x d` tensor of samples if `out=None` and `None` otherwise.
+        """
+        dtype = torch.get_default_dtype() if dtype is None else dtype
+        # get base samples
+        samples = self._sobol_engine.draw(n, dtype=dtype)
+        if self._inv_transform:
+            # apply inverse transform (values to close to 0/1 result in inf values)
+            v = 0.5 + (1 - torch.finfo(samples.dtype).eps) * (samples - 0.5)
+            samples_tf = torch.erfinv(2 * v - 1) * math.sqrt(2)
+        else:
+            # apply Box-Muller transform (note: [1] indexes starting from 1)
+            even = torch.arange(0, samples.shape[-1], 2)
+            Rs = (-2 * torch.log(samples[:, even])).sqrt()
+            thetas = 2 * math.pi * samples[:, 1 + even]
+            cos = torch.cos(thetas)
+            sin = torch.sin(thetas)
+            samples_tf = torch.stack([Rs * cos, Rs * sin], -1).reshape(n, -1)
+            # make sure we only return the number of dimension requested
+            samples_tf = samples_tf[:, : self._d]
+
+        return samples_tf
 
 
 class TorchMXLMSLE(nn.Module):
@@ -107,15 +156,13 @@ class TorchMXLMSLE(nn.Module):
         zeta_cov_tril = torch.zeros((self.num_mixed_params, self.num_mixed_params), dtype=self.torch_dtype, device=self.device)
         zeta_cov_tril[self.tril_indices_zeta[0], self.tril_indices_zeta[1]] = zeta_cov_offdiag
         zeta_cov_tril += torch.diag_embed(self.softplus(zeta_cov_diag))
-        q_zeta = td.MultivariateNormal(zeta_mu, scale_tril=torch.tril(zeta_cov_tril))
 
-        # TODO: look into better coverage, e.g. https://github.com/pytorch/botorch/blob/main/botorch/sampling/qmc.py
-        # and https://pytorch.org/docs/stable/generated/torch.quasirandom.SobolEngine.html
-        betas = q_zeta.rsample(sample_shape=torch.Size([self.num_resp, self.num_draws]))
+        #torch.manual_seed(self.seed)
+        #q_zeta = td.MultivariateNormal(zeta_mu, scale_tril=torch.tril(zeta_cov_tril))
+        #betas = q_zeta.rsample(sample_shape=torch.Size([self.num_resp, self.num_draws]))
+        betas = (self.uniform_normal_draws @ torch.tril(zeta_cov_tril) + zeta_mu)
 
         sampled_probs = torch.zeros(self.num_resp, device=self.device, dtype=self.torch_dtype)
-
-        torch.manual_seed(self.seed)
 
         for i in range(self.num_draws):
             beta_resp = self.gather_parameters_for_MNL_kernel(alpha_mu, betas[:, i], indices)
@@ -136,6 +183,15 @@ class TorchMXLMSLE(nn.Module):
         # print(f"zeta_cov_offdiag = {zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
 
         return -loglik_total
+
+
+    def generate_draws(self):
+        #torch.manual_seed(self.seed)
+        # TODO: check if we need to draw per person to keep correlation structure or if reshaping is ok here
+        dist = NormalQMCEngine(self.num_mixed_params, seed=self.seed)
+        self.uniform_normal_draws = dist.draw(
+            self.num_draws * self.num_resp, dtype=self.torch_dtype
+        ).reshape([self.num_resp, self.num_draws, self.num_mixed_params]).to(device=self.device)
 
 
     def model_inputs(self):
@@ -188,6 +244,10 @@ class TorchMXLMSLE(nn.Module):
         self.train()  # enable training mode
 
         tic = time.time()
+
+        print("Generating draws")
+        self.generate_draws()
+        print("Done generating draws")
 
         all_results = [] # TODO: quick hack for looking at results over epochs, set up proper monitoring
 
