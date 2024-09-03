@@ -7,7 +7,7 @@ import time
 
 
 class TorchMXLMSLE(nn.Module):
-    def __init__(self, dcm_dataset, batch_size, num_draws=1000, use_cuda=True, use_double=False):
+    def __init__(self, dcm_dataset, batch_size, num_draws=1000, use_cuda=True, use_double=False, include_correlations=False):
         super(TorchMXLMSLE, self).__init__()
 
         self.dcm_dataset = dcm_dataset
@@ -43,6 +43,7 @@ class TorchMXLMSLE(nn.Module):
 
         self.num_draws = int(num_draws)
         self.seed = 7777777
+        self.include_correlations = include_correlations
 
         # prepare data for running inference
         self.train_x = torch.tensor(self.alt_attributes, dtype=self.torch_dtype)  # .to(self.device)
@@ -72,6 +73,7 @@ class TorchMXLMSLE(nn.Module):
         # initialize parameters
         self.initialize_parameters()
 
+
     def initialize_parameters(self, ):
         # fixed params
         alpha_mu_initial_values = torch.from_numpy(np.array(self.dcm_spec.fixed_params_initial_values, dtype=self.numpy_dtype))
@@ -80,18 +82,20 @@ class TorchMXLMSLE(nn.Module):
         # mixed params
         zeta_mu_initial_values = torch.from_numpy(np.array(self.dcm_spec.mixed_params_initial_values, dtype=self.numpy_dtype))
         self.zeta_mu = nn.Parameter(zeta_mu_initial_values)
-        self.zeta_cov_diag = nn.Parameter(torch.ones(self.num_mixed_params))
-        # NO CORRELATIONS
-        #self.zeta_cov_offdiag = torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2))
-        self.zeta_cov_offdiag = nn.Parameter(
-            torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2)))
-        self.tril_indices_zeta = torch.tril_indices(row=self.num_mixed_params, col=self.num_mixed_params, offset=-1)
+        self.zeta_cov_diag = nn.Parameter(torch.ones(self.num_mixed_params), dtype=self.torch_dtype)
+
+        if self.include_correlations:
+            self.zeta_cov_offdiag = nn.Parameter(
+                torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2)), dtype=self.torch_dtype)
+            self.tril_indices_zeta = torch.tril_indices(row=self.num_mixed_params, col=self.num_mixed_params, offset=-1)
+        else:
+            self.zeta_cov_offdiag = torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2), dtype=self.torch_dtype)
 
 
     def loglikelihood(self, alt_attr, context_attr, obs_choices, alt_avail, obs_mask, alt_ids, indices):
-
         # normal to draw variables from
         zeta_cov_tril = torch.zeros((self.num_mixed_params, self.num_mixed_params), device=self.device)
+        #if self.include_correlations:
         zeta_cov_tril[self.tril_indices_zeta[0], self.tril_indices_zeta[1]] = self.zeta_cov_offdiag
         zeta_cov_tril += torch.diag_embed(self.softplus(self.zeta_cov_diag))
         q_zeta = td.MultivariateNormal(self.zeta_mu, scale_tril=torch.tril(zeta_cov_tril))
