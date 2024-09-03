@@ -187,27 +187,11 @@ class TorchMXLMSLE(nn.Module):
 
 
     def generate_draws(self):
-        #torch.manual_seed(self.seed)
         # TODO: check if we need to draw per person to keep correlation structure or if reshaping is ok here
         dist = NormalQMCEngine(self.num_mixed_params, seed=self.seed)
         self.uniform_normal_draws = dist.draw(
-            self.num_draws * self.num_resp, dtype=self.torch_dtype
+            self.num_draws * self.num_resp
         ).reshape([self.num_resp, self.num_draws, self.num_mixed_params]).to(device=self.device)
-
-
-    # def model_inputs(self):
-    #     #indices = torch.randperm(self.num_resp)
-    #     indices = torch.from_numpy(np.arange(self.num_resp))
-    #     batch_x, batch_context, batch_y = self.train_x[indices], self.context_info[indices], self.train_y[
-    #         indices]
-    #     batch_alt_av_mat, batch_mask_cuda, batch_alt_ids = self.alt_av_mat_cuda[indices], self.mask_cuda[
-    #         indices], self.alt_ids_cuda[indices]
-    #     batch_x = batch_x.to(self.device)
-    #     batch_context = batch_context.to(self.device)
-    #     batch_y = batch_y.to(self.device)
-    #     batch_alt_av_mat = batch_alt_av_mat.to(self.device)
-    #     batch_mask_cuda = batch_mask_cuda.to(self.device)
-    #     return batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices
 
 
     def calculate_std_errors(self):
@@ -224,14 +208,12 @@ class TorchMXLMSLE(nn.Module):
         return stderr.detach().cpu().numpy()
 
 
-    # lbfgs has no stopping criterion in pytorch I believe, need to set upper limit of max iters
     def infer(self, max_iter=50, seed=None):
  
         self.to(self.device)
 
         optimizer = LBFGS(self.parameters(), max_iter=max_iter, line_search_fn='strong_wolfe')
             # tolerance_grad=1e-9, tolerance_change=1e-12, history_size=100
-            # line_search_fn="strong_wolfe")
 
         if seed is not None:
             self.seed = int(seed)
