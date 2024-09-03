@@ -7,7 +7,7 @@ import time
 
 
 class TorchMXLMSLE(nn.Module):
-    def __init__(self, dcm_dataset, batch_size, num_draws=1000, use_cuda=True, use_double=False, include_correlations=False):
+    def __init__(self, dcm_dataset, batch_size, num_draws=1000, use_cuda=True, use_double=False, include_correlations=False, log_normal_params=[]):
         super(TorchMXLMSLE, self).__init__()
 
         self.dcm_dataset = dcm_dataset
@@ -44,6 +44,7 @@ class TorchMXLMSLE(nn.Module):
         self.num_draws = int(num_draws)
         self.seed = 7777777
         self.include_correlations = include_correlations
+        self.log_normal_params = log_normal_params
 
         # prepare data for running inference
         self.train_x = torch.tensor(self.alt_attributes, dtype=self.torch_dtype)  # .to(self.device)
@@ -236,6 +237,8 @@ class TorchMXLMSLE(nn.Module):
         results["Loglikelihood"] = self.loglik_val  #loglik.item()
         results['num_epochs'] = num_epochs
         results['stderr'] = self.calculate_std_errors()
+        if len(self.log_normal_params):
+            results['lognormal_params'] = self.log_normal_params
 
         print(f"Loglikelihood at end of training = {self.loglik_val:.1f}")
 
@@ -269,7 +272,12 @@ class TorchMXLMSLE(nn.Module):
                     reordered_pars.append(alpha_resp[:, next_fixed].unsqueeze(-1))
                     next_fixed += 1
                 elif par_id in self.dcm_spec.mixed_param_ids:
-                    reordered_pars.append(beta[indices, next_mixed].unsqueeze(-1))
+                    # experiment with log-normal params (assumed to be negative here)
+                    if self.dcm_spec.mixed_param_names[next_mixed] in self.log_normal_params:
+                        #print(f"log normal: {par_id}")
+                        reordered_pars.append(-beta[indices, next_mixed].unsqueeze(-1).exp())
+                    else:
+                        reordered_pars.append(beta[indices, next_mixed].unsqueeze(-1))
                     next_mixed += 1
                 else:
                     raise Exception("This should not happen - check if effect names are unique.")
