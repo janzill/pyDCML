@@ -82,11 +82,11 @@ class TorchMXLMSLE(nn.Module):
         # mixed params
         zeta_mu_initial_values = torch.from_numpy(np.array(self.dcm_spec.mixed_params_initial_values, dtype=self.numpy_dtype))
         self.zeta_mu = nn.Parameter(zeta_mu_initial_values)
-        self.zeta_cov_diag = nn.Parameter(torch.ones(self.num_mixed_params), dtype=self.torch_dtype)
+        self.zeta_cov_diag = nn.Parameter(torch.ones(self.num_mixed_params, dtype=self.torch_dtype))
 
         if self.include_correlations:
             self.zeta_cov_offdiag = nn.Parameter(
-                torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2)), dtype=self.torch_dtype)
+                torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2), dtype=self.torch_dtype))
         else:
             self.zeta_cov_offdiag = torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2), dtype=self.torch_dtype)
 
