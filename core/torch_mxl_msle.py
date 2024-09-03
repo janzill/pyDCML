@@ -87,9 +87,10 @@ class TorchMXLMSLE(nn.Module):
         if self.include_correlations:
             self.zeta_cov_offdiag = nn.Parameter(
                 torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2)), dtype=self.torch_dtype)
-            self.tril_indices_zeta = torch.tril_indices(row=self.num_mixed_params, col=self.num_mixed_params, offset=-1)
         else:
             self.zeta_cov_offdiag = torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2), dtype=self.torch_dtype)
+
+        self.tril_indices_zeta = torch.tril_indices(row=self.num_mixed_params, col=self.num_mixed_params, offset=-1)
 
 
     def loglikelihood(self, alt_attr, context_attr, obs_choices, alt_avail, obs_mask, alt_ids, indices):
