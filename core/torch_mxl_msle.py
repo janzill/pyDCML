@@ -96,7 +96,7 @@ class TorchMXLMSLE(nn.Module):
     def loglikelihood(self, alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
 
         alt_attr, context_attr, obs_choices, alt_avail, obs_mask, alt_ids, indices = self.model_inputs()
-        # DEBUG
+        # DEBUG - TODO: set up proper logging
         print(f"before drawing - zeta = {zeta_mu.detach().cpu().numpy().tolist()}")
         print(f"before drawing - zeta_cov_diag = {zeta_cov_diag.detach().cpu().numpy().tolist()}")
         if self.include_correlations:
@@ -119,6 +119,7 @@ class TorchMXLMSLE(nn.Module):
         for i in range(self.num_draws):
             beta_resp = self.gather_parameters_for_MNL_kernel(alpha_mu, betas[:, i], indices)
             utilities = self.compute_utilities(beta_resp, alt_attr, alt_avail, alt_ids)
+            # TODO: maybe go from log_prob(choices).exp() to prob() and then select chosen options
             probs = td.Categorical(logits=utilities).log_prob(obs_choices.transpose(0, 1)).exp()  # log_prob works with mask
             probs = torch.where(obs_mask.T, probs, probs.new_ones(()))  # use mask to filter out missing menus
             sampled_probs += probs.prod(axis=0)  # multiply probs over menus
