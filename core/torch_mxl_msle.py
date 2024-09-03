@@ -94,6 +94,13 @@ class TorchMXLMSLE(nn.Module):
 
 
     def loglikelihood(self, alt_attr, context_attr, obs_choices, alt_avail, obs_mask, alt_ids, indices):
+
+        # DEBUG
+        print(f"before drawing - zeta = {self.zeta_mu.detach().cpu().numpy().tolist()}")
+        print(f"before drawing - zeta_cov_diag = {self.zeta_cov_diag.detach().cpu().numpy().tolist()}")
+        if self.include_correlations:
+            print(f"before drawing - zeta_cov_offdiag = {self.zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
+
         # normal to draw variables from
         zeta_cov_tril = torch.zeros((self.num_mixed_params, self.num_mixed_params), device=self.device)
         #if self.include_correlations:
@@ -121,10 +128,10 @@ class TorchMXLMSLE(nn.Module):
 
         self.loglik_val = loglik_total.item()
         print(f"Mean loglike = {self.loglik_val}")
-        print(f"alpha = {self.alpha_mu.detach().cpu().numpy().tolist()}")
-        print(f"zeta = {self.zeta_mu.detach().cpu().numpy().tolist()}")
-        print(f"zeta_cov_diag = {self.zeta_cov_diag.detach().cpu().numpy().tolist()}")
-        print(f"zeta_cov_offdiag = {self.zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
+        # print(f"alpha = {self.alpha_mu.detach().cpu().numpy().tolist()}")
+        # print(f"zeta = {self.zeta_mu.detach().cpu().numpy().tolist()}")
+        # print(f"zeta_cov_diag = {self.zeta_cov_diag.detach().cpu().numpy().tolist()}")
+        # print(f"zeta_cov_offdiag = {self.zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
 
         return -loglik_total
 
