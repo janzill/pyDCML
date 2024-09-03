@@ -145,7 +145,8 @@ class TorchMXLMSLE(nn.Module):
 
     def loglikelihood(self, alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
 
-        alt_attr, context_attr, obs_choices, alt_avail, obs_mask, alt_ids, indices = self.model_inputs()
+        #alt_attr, context_attr, obs_choices, alt_avail, obs_mask, alt_ids, indices = self.model_inputs()
+
         # DEBUG - TODO: set up proper logging
         print(f"before drawing - zeta = {zeta_mu.detach().cpu().numpy().tolist()}")
         print(f"before drawing - zeta_cov_diag = {zeta_cov_diag.detach().cpu().numpy().tolist()}")
@@ -165,18 +166,18 @@ class TorchMXLMSLE(nn.Module):
         sampled_probs = torch.zeros(self.num_resp, device=self.device, dtype=self.torch_dtype)
 
         for i in range(self.num_draws):
-            beta_resp = self.gather_parameters_for_MNL_kernel(alpha_mu, betas[:, i], indices)
-            utilities = self.compute_utilities(beta_resp, alt_attr, alt_avail, alt_ids)
+            beta_resp = self.gather_parameters_for_MNL_kernel(alpha_mu, betas[:, i])  #, indices)
+            utilities = self.compute_utilities(beta_resp, self.train_x, self.alt_av_mat_cuda, self.alt_ids_cuda)
             # TODO: maybe go from log_prob(choices).exp() to prob() and then select chosen options
-            probs = td.Categorical(logits=utilities).log_prob(obs_choices.transpose(0, 1)).exp()  # log_prob works with mask
-            probs = torch.where(obs_mask.T, probs, probs.new_ones(()))  # use mask to filter out missing menus
+            probs = td.Categorical(logits=utilities).log_prob(self.train_y.transpose(0, 1)).exp()  # log_prob works with mask
+            probs = torch.where(self.mask_cuda.T, probs, probs.new_ones(()))  # use mask to filter out missing menus
             sampled_probs += probs.prod(axis=0)  # multiply probs over menus
 
         sampled_probs /= self.num_draws
         loglik_total = sampled_probs.log().sum()
 
         self.loglik_val = loglik_total.item()
-        print(f"Mean loglike = {self.loglik_val}")
+        print(f"Mean loglike = {self.loglik_val:.2f}")
         # print(f"alpha = {alpha_mu.detach().cpu().numpy().tolist()}")
         # print(f"zeta = {zeta_mu.detach().cpu().numpy().tolist()}")
         # print(f"zeta_cov_diag = {zeta_cov_diag.detach().cpu().numpy().tolist()}")
@@ -194,21 +195,19 @@ class TorchMXLMSLE(nn.Module):
         ).reshape([self.num_resp, self.num_draws, self.num_mixed_params]).to(device=self.device)
 
 
-    def model_inputs(self):
-        #indices = torch.randperm(self.num_resp)
-        indices = torch.from_numpy(np.arange(self.num_resp))
-        batch_x, batch_context, batch_y = self.train_x[indices], self.context_info[indices], self.train_y[
-            indices]
-        batch_alt_av_mat, batch_mask_cuda, batch_alt_ids = self.alt_av_mat_cuda[indices], self.mask_cuda[
-            indices], self.alt_ids_cuda[indices]
-
-        batch_x = batch_x.to(self.device)
-        batch_context = batch_context.to(self.device)
-        batch_y = batch_y.to(self.device)
-        batch_alt_av_mat = batch_alt_av_mat.to(self.device)
-        batch_mask_cuda = batch_mask_cuda.to(self.device)
-
-        return batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices
+    # def model_inputs(self):
+    #     #indices = torch.randperm(self.num_resp)
+    #     indices = torch.from_numpy(np.arange(self.num_resp))
+    #     batch_x, batch_context, batch_y = self.train_x[indices], self.context_info[indices], self.train_y[
+    #         indices]
+    #     batch_alt_av_mat, batch_mask_cuda, batch_alt_ids = self.alt_av_mat_cuda[indices], self.mask_cuda[
+    #         indices], self.alt_ids_cuda[indices]
+    #     batch_x = batch_x.to(self.device)
+    #     batch_context = batch_context.to(self.device)
+    #     batch_y = batch_y.to(self.device)
+    #     batch_alt_av_mat = batch_alt_av_mat.to(self.device)
+    #     batch_mask_cuda = batch_mask_cuda.to(self.device)
+    #     return batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices
 
 
     def calculate_std_errors(self):
@@ -225,19 +224,15 @@ class TorchMXLMSLE(nn.Module):
         return stderr.detach().cpu().numpy()
 
 
-    def infer(self, return_all_results=False, use_lfbgs=True, num_epochs=1, max_iter=50, seed=None):
+    # lbfgs has no stopping criterion in pytorch I believe, need to set upper limit of max iters
+    def infer(self, max_iter=50, seed=None):
  
         self.to(self.device)
 
-        if use_lfbgs:
-            print("Using LFBGS")
-            optimizer = LBFGS(self.parameters(), max_iter=max_iter)
+        optimizer = LBFGS(self.parameters(), max_iter=max_iter, line_search_fn='strong_wolfe')
             # tolerance_grad=1e-9, tolerance_change=1e-12, history_size=100
             # line_search_fn="strong_wolfe")
-        else:
-            print("Using ADAM - not recommended for MSLE")
-            optimizer = Adam(self.parameters(), lr=1e-2)
-        
+
         if seed is not None:
             self.seed = int(seed)
 
@@ -245,42 +240,19 @@ class TorchMXLMSLE(nn.Module):
 
         tic = time.time()
 
-        print("Generating draws")
         self.generate_draws()
-        print("Done generating draws")
-
-        all_results = [] # TODO: quick hack for looking at results over epochs, set up proper monitoring
 
         def closure():
             optimizer.zero_grad()
-            objective = self.loglikelihood(self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag)  #batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices)
+            objective = self.loglikelihood(self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag)
             objective.backward()
             return objective
 
-        ll = self.loglikelihood(self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag)  #batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices)
+        ll = self.loglikelihood(self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag)
         print(f"Initial log-likelihood = -{ll.item()}")
         
-        for epoch in range(num_epochs):
-            if use_lfbgs:
-                optimizer.step(closure)
-            else:
-                optimizer.zero_grad()
-                loglik = self.loglikelihood(self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag)  #batch_x, batch_context, batch_y, batch_alt_av_mat, batch_mask_cuda, batch_alt_ids, indices)
-                loglik.backward()
-                optimizer.step()
-
-            if not epoch % 10:
-                print("[Epoch %5d] Loglik: %.1f" % (epoch, self.loglik_val))  # , acc: %.3f, self.acc))
-
-            if return_all_results:
-                results_this_epoch = {}
-                results_this_epoch["alpha_mu"] = self.alpha_mu.detach().cpu().numpy().tolist()
-                results_this_epoch["zeta_mu"] = self.zeta_mu.detach().cpu().numpy().tolist()
-                results_this_epoch['zeta_cov_diag'] = self.zeta_cov_diag.detach().cpu().numpy().tolist()
-                results_this_epoch['zeta_cov_offdiag'] = self.zeta_cov_offdiag.detach().cpu().numpy().tolist()
-                results_this_epoch["Loglikelihood"] = self.loglik_val  #loglik.item()
-                all_results.append(results_this_epoch)
-
+        optimizer.step(closure)
+ 
         toc = time.time() - tic
         print('Elapsed time:', toc, '\n')
 
@@ -294,15 +266,12 @@ class TorchMXLMSLE(nn.Module):
             results['zeta_cov_diag'] = self.zeta_cov_diag.detach().cpu().numpy()
             results['zeta_cov_offdiag'] = self.zeta_cov_offdiag.detach().cpu().numpy()
             results['zeta_names'] = self.dcm_spec.mixed_param_names
-        results["Loglikelihood"] = self.loglik_val  #loglik.item()
-        results['num_epochs'] = num_epochs
+        results["Loglikelihood"] = self.loglik_val
         results['stderr'] = self.calculate_std_errors()
         if len(self.log_normal_params):
             results['lognormal_params'] = self.log_normal_params
 
-        print(f"Loglikelihood at end of training = {self.loglik_val:.1f}")
-
-        return results, all_results
+        return results
 
 
     def compute_utilities(self, beta_resp, alt_attr, alt_avail, alt_ids):
@@ -316,7 +285,7 @@ class TorchMXLMSLE(nn.Module):
         return utilities
     
 
-    def gather_parameters_for_MNL_kernel(self, alpha, beta, indices):
+    def gather_parameters_for_MNL_kernel(self, alpha, beta):
 
         if self.dcm_spec.model_type == 'MNL':
             params_resp = alpha.repeat(self.batch_size, 1)
@@ -335,9 +304,9 @@ class TorchMXLMSLE(nn.Module):
                     # experiment with log-normal params (assumed to be negative here)
                     if self.dcm_spec.mixed_param_names[next_mixed] in self.log_normal_params:
                         #print(f"log normal: {par_id}")
-                        reordered_pars.append(-beta[indices, next_mixed].unsqueeze(-1).exp())
+                        reordered_pars.append(-beta[:, next_mixed].unsqueeze(-1).exp())
                     else:
-                        reordered_pars.append(beta[indices, next_mixed].unsqueeze(-1))
+                        reordered_pars.append(beta[:, next_mixed].unsqueeze(-1))
                     next_mixed += 1
                 else:
                     raise Exception("This should not happen - check if effect names are unique.")
