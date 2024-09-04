@@ -1,6 +1,7 @@
 import time
 import math
 import numpy as np
+from datetime import datetime
 
 import torch
 import torch.nn as nn
@@ -143,15 +144,14 @@ class TorchMXLMSLE(nn.Module):
         self.tril_indices_zeta = torch.tril_indices(row=self.num_mixed_params, col=self.num_mixed_params, offset=-1)
 
 
-    def loglikelihood(self, alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
-
-        #alt_attr, context_attr, obs_choices, alt_avail, obs_mask, alt_ids, indices = self.model_inputs()
-
-        # DEBUG - TODO: set up proper logging
-        print(f"before drawing - zeta = {zeta_mu.detach().cpu().numpy().tolist()}")
-        print(f"before drawing - zeta_cov_diag = {zeta_cov_diag.detach().cpu().numpy().tolist()}")
-        if self.include_correlations:
-            print(f"before drawing - zeta_cov_offdiag = {zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
+    def loglikelihood(self, alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag, print_debug=True):
+        #  DEBUG - TODO: set up proper logging
+        if print_debug:  # not possible for hessian comp
+            print(f"before drawing - alpha = {alpha_mu.detach().cpu().numpy().tolist()}")
+            print(f"before drawing - zeta = {zeta_mu.detach().cpu().numpy().tolist()}")
+            print(f"before drawing - zeta_cov_diag = {zeta_cov_diag.detach().cpu().numpy().tolist()}")
+            if self.include_correlations:
+                print(f"before drawing - zeta_cov_offdiag = {zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
 
         # normal to draw variables from
         zeta_cov_tril = torch.zeros((self.num_mixed_params, self.num_mixed_params), dtype=self.torch_dtype, device=self.device)
@@ -177,12 +177,8 @@ class TorchMXLMSLE(nn.Module):
         loglik_total = sampled_probs.log().sum()
 
         self.loglik_val = loglik_total.item()
-        print(f"Mean loglike = {self.loglik_val:.2f}")
-        # print(f"alpha = {alpha_mu.detach().cpu().numpy().tolist()}")
-        # print(f"zeta = {zeta_mu.detach().cpu().numpy().tolist()}")
-        # print(f"zeta_cov_diag = {zeta_cov_diag.detach().cpu().numpy().tolist()}")
-        # print(f"zeta_cov_offdiag = {zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
-
+        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  loglikelihood = {self.loglik_val:.2f}")
+ 
         return -loglik_total
 
 
@@ -195,25 +191,27 @@ class TorchMXLMSLE(nn.Module):
 
 
     def calculate_std_errors(self):
-        print("Calculating std errors")
+        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Calculating std errors")
         if self.zeta_cov_offdiag.shape == torch.Size([0]):
-            ll_partial = lambda x, y, z: self.loglikelihood(x, y, z, self.zeta_cov_offdiag)
-            hessian = torch.autograd.functional.hessian(ll_partial, (self.alpha_mu, self.zeta_mu, self.zeta_cov_diag))
+            arg_nums_ = (0, 1, 2)
+        #    ll_partial = lambda x, y, z: self.loglikelihood(x, y, z, self.zeta_cov_offdiag)
+        #    hessian = torch.autograd.functional.hessian(ll_partial, (self.alpha_mu, self.zeta_mu, self.zeta_cov_diag))
         else:
-            hessian = torch.autograd.functional.hessian(self.loglikelihood, (self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag))
-        full_hessian = torch.vstack([torch.hstack(x) for x in hessian])
-        # This is defined in order of construction of nn.Parameters (same order as passed into loglikelihood)
+            arg_nums_ = (0, 1, 2, 3)
+        hess_ = torch.func.hessian(self.loglikelihood, argnums=arg_nums_)(
+            self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag, False)
+        full_hessian = torch.vstack([torch.hstack(x) for x in hess_])
         stderr = torch.sqrt(torch.linalg.diagonal(torch.linalg.inv(full_hessian)))
-        print("Done calculating std errors")
+        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Done calculating std errors")
         return stderr.detach().cpu().numpy()
 
 
-    def infer(self, max_iter=50, seed=None):
+    def infer(self, max_iter=50, seed=None, skip_std_err=False, tolerance_grad=1e-9, tolerance_change=1e-12, history_size=100):
  
         self.to(self.device)
 
-        optimizer = LBFGS(self.parameters(), max_iter=max_iter, line_search_fn='strong_wolfe')
-            # tolerance_grad=1e-9, tolerance_change=1e-12, history_size=100
+        optimizer = LBFGS(self.parameters(), max_iter=max_iter, line_search_fn='strong_wolfe',
+                          tolerance_grad=tolerance_grad, tolerance_change=tolerance_change, history_size=history_size)
 
         if seed is not None:
             self.seed = int(seed)
@@ -229,12 +227,9 @@ class TorchMXLMSLE(nn.Module):
             objective = self.loglikelihood(self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag)
             objective.backward()
             return objective
-
-        ll = self.loglikelihood(self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag)
-        print(f"Initial log-likelihood = -{ll.item()}")
         
         optimizer.step(closure)
- 
+
         toc = time.time() - tic
         print('Elapsed time:', toc, '\n')
 
@@ -249,7 +244,8 @@ class TorchMXLMSLE(nn.Module):
             results['zeta_cov_offdiag'] = self.zeta_cov_offdiag.detach().cpu().numpy()
             results['zeta_names'] = self.dcm_spec.mixed_param_names
         results["Loglikelihood"] = self.loglik_val
-        results['stderr'] = self.calculate_std_errors()
+        if not skip_std_err:
+            results['stderr'] = self.calculate_std_errors()
         if len(self.log_normal_params):
             results['lognormal_params'] = self.log_normal_params
 
