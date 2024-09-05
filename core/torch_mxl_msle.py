@@ -209,14 +209,13 @@ class TorchMXLMSLE(nn.Module):
     def infer(self, max_iter=50, seed=None, skip_std_err=False, tolerance_grad=1e-9, tolerance_change=1e-12, history_size=100):
  
         self.to(self.device)
+        self.train()  # enable training mode
 
         optimizer = LBFGS(self.parameters(), max_iter=max_iter, line_search_fn='strong_wolfe',
                           tolerance_grad=tolerance_grad, tolerance_change=tolerance_change, history_size=history_size)
 
         if seed is not None:
             self.seed = int(seed)
-
-        self.train()  # enable training mode
 
         tic = time.time()
 
@@ -296,3 +295,44 @@ class TorchMXLMSLE(nn.Module):
             raise Exception("Unknown model type:", self.dcm_spec.model_type)
         
         return beta_resp
+    
+
+    def infer_bfgs(self, max_iter=None, seed=None):
+        from torchmin import Minimizer
+        self.to(self.device)
+        self.train()  # enable training mode
+
+        optimizer = Minimizer(self.parameters(), method='bfgs', max_iter=max_iter)
+
+        if seed is not None:
+            self.seed = int(seed)
+
+        tic = time.time()
+        self.generate_draws()
+
+        def closure():
+            optimizer.zero_grad()
+            objective = self.loglikelihood(self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag)
+            return objective
+
+        optimizer.step(closure)
+
+        toc = time.time() - tic
+        print('Elapsed time:', toc, '\n')
+
+        # prepare python dictionary of results to output
+        results = {}
+        results["Estimation time"] = toc
+        results["Est. alpha"] = self.alpha_mu.detach().cpu().numpy()
+        results['alpha_names'] = self.dcm_spec.fixed_param_names
+        if self.dcm_spec.model_type != 'MNL':
+            results["Est. zeta"] = self.zeta_mu.detach().cpu().numpy()
+            results['zeta_cov_diag'] = self.zeta_cov_diag.detach().cpu().numpy()
+            results['zeta_cov_offdiag'] = self.zeta_cov_offdiag.detach().cpu().numpy()
+            results['zeta_names'] = self.dcm_spec.mixed_param_names
+        results["Loglikelihood"] = self.loglik_val
+        results['stderr'] = torch.sqrt(torch.linalg.diagonal(optimizer._result['hess_inv'])).detach().cpu().numpy()
+        if len(self.log_normal_params):
+            results['lognormal_params'] = self.log_normal_params
+
+        return results
