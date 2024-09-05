@@ -6,7 +6,7 @@ from datetime import datetime
 import torch
 import torch.nn as nn
 import torch.distributions as td
-from torch.optim import Adam, LBFGS
+from torch.optim import LBFGS
 from torch.quasirandom import SobolEngine
 
 
@@ -76,7 +76,6 @@ class TorchMXLMSLE(nn.Module):
         self.choices = dcm_dataset.true_choices
         self.alt_availability = dcm_dataset.alt_availability
         self.mask = dcm_dataset.mask
-        self.context = dcm_dataset.context
 
         self.device = torch.device("cuda:0" if use_cuda and torch.cuda.is_available() else "cpu")
 
@@ -95,20 +94,21 @@ class TorchMXLMSLE(nn.Module):
         self.seed = 7777777
         self.include_correlations = include_correlations
         self.log_normal_params = log_normal_params
+        self.loglik_values = []
+
 
         # prepare data for running inference
-        self.train_x = torch.tensor(self.alt_attributes, dtype=self.torch_dtype)  # .to(self.device)
-        self.context_info = torch.tensor(self.context, dtype=self.torch_dtype)  # .to(self.device)
-        self.train_y = torch.tensor(self.choices, dtype=torch.int)  # .to(self.device)
-        self.alt_av = torch.from_numpy(self.alt_availability)  # .to(self.device)
+        self.train_x = torch.tensor(self.alt_attributes, dtype=self.torch_dtype)
+        self.train_y = torch.tensor(self.choices, dtype=torch.int)
+        self.alt_av = torch.from_numpy(self.alt_availability)
         self.alt_av_mat = self.alt_availability.copy()
         self.alt_av_mat[np.where(self.alt_av_mat == 0)] = -1e9
         self.alt_av_mat -= 1
 
         if self.use_double:
-            self.alt_av_mat_cuda = torch.from_numpy(self.alt_av_mat).double()  # .to(self.device)
+            self.alt_av_mat_cuda = torch.from_numpy(self.alt_av_mat).double()
         else:
-            self.alt_av_mat_cuda = torch.from_numpy(self.alt_av_mat).float()  # .to(self.device)
+            self.alt_av_mat_cuda = torch.from_numpy(self.alt_av_mat).float()
         self.zeros_mat = torch.zeros(self.num_menus, self.batch_size, self.num_alternatives).to(
             self.device)  # auxiliary matrix for model
         self.alt_ids_cuda = torch.from_numpy(
@@ -116,7 +116,7 @@ class TorchMXLMSLE(nn.Module):
                                                                                                         self.num_menus,
                                                                                                         -1)).to(
             self.device)
-        self.mask_cuda = torch.tensor(self.mask, dtype=torch.bool)  # .to(self.device)
+        self.mask_cuda = torch.tensor(self.mask, dtype=torch.bool)
 
         # setup the non-linearities
         self.softplus = nn.Softplus()
@@ -177,6 +177,7 @@ class TorchMXLMSLE(nn.Module):
         loglik_total = sampled_probs.log().sum()
 
         self.loglik_val = loglik_total.item()
+        self.loglik_values.append(self.loglik_val)
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  loglikelihood = {self.loglik_val:.2f}")
  
         return -loglik_total
@@ -210,6 +211,7 @@ class TorchMXLMSLE(nn.Module):
  
         self.to(self.device)
         self.train()  # enable training mode
+        self.loglik_values = []
 
         optimizer = LBFGS(self.parameters(), max_iter=max_iter, line_search_fn='strong_wolfe',
                           tolerance_grad=tolerance_grad, tolerance_change=tolerance_change, history_size=history_size)
@@ -247,6 +249,12 @@ class TorchMXLMSLE(nn.Module):
             results['stderr'] = self.calculate_std_errors()
         if len(self.log_normal_params):
             results['lognormal_params'] = self.log_normal_params
+        results['loglike_values'] = self.loglik_values
+        # optimizer state info
+        results['optimizer_settings'] = optimizer.defaults
+        k = list(optimizer.__dict__['state'].keys())[0]
+        results['number_of_iterations'] = optimizer.__dict__['state'][k]['n_iter']
+        results['flat_grad'] = optimizer.state[k]['prev_flat_grad'].detach().cpu().numpy()
 
         return results
 
