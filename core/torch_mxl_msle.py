@@ -130,6 +130,12 @@ class TorchMXLMSLE(nn.Module):
         alpha_mu_initial_values = torch.from_numpy(np.array(self.dcm_spec.fixed_params_initial_values, dtype=self.numpy_dtype))
         self.alpha_mu = nn.Parameter(alpha_mu_initial_values)
 
+        if self.dcm_spec.model_type == 'MNL':
+            self.zeta_mu = None
+            self.zeta_cov_diag = None
+            self.zeta_cov_offdiag = None
+            return
+
         # mixed params
         zeta_mu_initial_values = torch.from_numpy(np.array(self.dcm_spec.mixed_params_initial_values, dtype=self.numpy_dtype))
         self.zeta_mu = nn.Parameter(zeta_mu_initial_values)
@@ -145,36 +151,44 @@ class TorchMXLMSLE(nn.Module):
 
 
     def loglikelihood(self, alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag, print_debug=True):
-        #  DEBUG - TODO: set up proper logging
-        if print_debug:  # not possible for hessian comp
-            print(f"before drawing - alpha = {alpha_mu.detach().cpu().numpy().tolist()}")
-            print(f"before drawing - zeta = {zeta_mu.detach().cpu().numpy().tolist()}")
-            print(f"before drawing - zeta_cov_diag = {zeta_cov_diag.detach().cpu().numpy().tolist()}")
-            if self.include_correlations:
-                print(f"before drawing - zeta_cov_offdiag = {zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
 
-        # normal to draw variables from
-        zeta_cov_tril = torch.zeros((self.num_mixed_params, self.num_mixed_params), dtype=self.torch_dtype, device=self.device)
-        zeta_cov_tril[self.tril_indices_zeta[0], self.tril_indices_zeta[1]] = zeta_cov_offdiag
-        zeta_cov_tril += torch.diag_embed(self.softplus(zeta_cov_diag))
-
-        #torch.manual_seed(self.seed)
-        #q_zeta = td.MultivariateNormal(zeta_mu, scale_tril=torch.tril(zeta_cov_tril))
-        #betas = q_zeta.rsample(sample_shape=torch.Size([self.num_resp, self.num_draws]))
-        betas = (self.uniform_normal_draws @ torch.tril(zeta_cov_tril) + zeta_mu)
-
-        sampled_probs = torch.zeros(self.num_resp, device=self.device, dtype=self.torch_dtype)
-
-        for i in range(self.num_draws):
-            beta_resp = self.gather_parameters_for_MNL_kernel(alpha_mu, betas[:, i])  #, indices)
+        if self.dcm_spec.model_type == 'MNL':
+            beta_resp = self.gather_parameters_for_MNL_kernel(alpha_mu, None)  #, indices)
             utilities = self.compute_utilities(beta_resp, self.train_x, self.alt_av_mat_cuda, self.alt_ids_cuda)
-            # TODO: maybe go from log_prob(choices).exp() to prob() and then select chosen options
             probs = td.Categorical(logits=utilities).log_prob(self.train_y.transpose(0, 1)).exp()  # log_prob works with mask
             probs = torch.where(self.mask_cuda.T, probs, probs.new_ones(()))  # use mask to filter out missing menus
-            sampled_probs += probs.prod(axis=0)  # multiply probs over menus
+            probs = probs.prod(axis=0)  # multiply probs over menus
+            loglik_total = probs.log().sum()
+        else:
+            #  DEBUG - TODO: set up proper logging
+            if print_debug:  # not possible for hessian comp
+                print(f"before drawing - alpha = {alpha_mu.detach().cpu().numpy().tolist()}")
+                print(f"before drawing - zeta = {zeta_mu.detach().cpu().numpy().tolist()}")
+                print(f"before drawing - zeta_cov_diag = {zeta_cov_diag.detach().cpu().numpy().tolist()}")
+                if self.include_correlations:
+                    print(f"before drawing - zeta_cov_offdiag = {zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
+            # normal to draw variables from
+            zeta_cov_tril = torch.zeros((self.num_mixed_params, self.num_mixed_params), dtype=self.torch_dtype, device=self.device)
+            zeta_cov_tril[self.tril_indices_zeta[0], self.tril_indices_zeta[1]] = zeta_cov_offdiag
+            zeta_cov_tril += torch.diag_embed(self.softplus(zeta_cov_diag))
 
-        sampled_probs /= self.num_draws
-        loglik_total = sampled_probs.log().sum()
+            #torch.manual_seed(self.seed)
+            #q_zeta = td.MultivariateNormal(zeta_mu, scale_tril=torch.tril(zeta_cov_tril))
+            #betas = q_zeta.rsample(sample_shape=torch.Size([self.num_resp, self.num_draws]))
+            betas = (self.uniform_normal_draws @ torch.tril(zeta_cov_tril) + zeta_mu)
+
+            sampled_probs = torch.zeros(self.num_resp, device=self.device, dtype=self.torch_dtype)
+
+            for i in range(self.num_draws):
+                beta_resp = self.gather_parameters_for_MNL_kernel(alpha_mu, betas[:, i])  #, indices)
+                utilities = self.compute_utilities(beta_resp, self.train_x, self.alt_av_mat_cuda, self.alt_ids_cuda)
+                # TODO: maybe go from log_prob(choices).exp() to prob() and then select chosen options
+                probs = td.Categorical(logits=utilities).log_prob(self.train_y.transpose(0, 1)).exp()  # log_prob works with mask
+                probs = torch.where(self.mask_cuda.T, probs, probs.new_ones(()))  # use mask to filter out missing menus
+                sampled_probs += probs.prod(axis=0)  # multiply probs over menus
+
+            sampled_probs /= self.num_draws
+            loglik_total = sampled_probs.log().sum()
 
         self.loglik_val = loglik_total.item()
         self.loglik_values.append(self.loglik_val)
@@ -192,7 +206,12 @@ class TorchMXLMSLE(nn.Module):
 
 
     def calculate_std_errors(self):
+        if self.dcm_spec.model_type == 'MNL':
+            print("No std errors for MNL yet, just get rid of hstack in full_hession below")
+            return None
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Calculating std errors")
+        #if self.dcm_spec.model_type == 'MNL':
+        #    arg_nums_ = (0)
         if self.zeta_cov_offdiag.shape == torch.Size([0]):
             arg_nums_ = (0, 1, 2)
         #    ll_partial = lambda x, y, z: self.loglikelihood(x, y, z, self.zeta_cov_offdiag)
@@ -221,7 +240,8 @@ class TorchMXLMSLE(nn.Module):
 
         tic = time.time()
 
-        self.generate_draws()
+        if self.dcm_spec.model_type != 'MNL':
+            self.generate_draws()
 
         def closure():
             optimizer.zero_grad()
