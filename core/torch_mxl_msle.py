@@ -102,7 +102,10 @@ class TorchMXLMSLE(nn.Module):
         self.train_y = torch.tensor(self.choices, dtype=torch.int)
         self.alt_av = torch.from_numpy(self.alt_availability)
         self.alt_av_mat = self.alt_availability.copy()
-        self.alt_av_mat[np.where(self.alt_av_mat == 0)] = -1e9
+        if use_double:
+            self.alt_av_mat[np.where(self.alt_av_mat == 0)] = -1e18
+        else:
+            self.alt_av_mat[np.where(self.alt_av_mat == 0)] = -1e9
         self.alt_av_mat -= 1
 
         if self.use_double:
@@ -225,8 +228,30 @@ class TorchMXLMSLE(nn.Module):
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Done calculating std errors")
         return stderr.detach().cpu().numpy()
 
+    def mask_fixed_parameters(self, fixed_params):
+        """masks gradient of parameters specified in fixed_params. For random params, only the mean is masked for now."""
+        fixed_param_alpha = [x for x in fixed_params if x in self.dcm_spec.fixed_param_names]
+        fixed_param_zeta = [x for x in fixed_params if x in self.dcm_spec.mixed_param_names]
+        # TODO: log if param is in neither
 
-    def infer(self, max_iter=50, seed=None, skip_std_err=False, tolerance_grad=1e-9, tolerance_change=1e-12, history_size=100):
+        for fixed_param in fixed_param_alpha:
+            idx_var = np.where(np.array(self.dcm_spec.fixed_param_names) == fixed_param)[0]
+            assert idx_var.shape[0] > 0, f"fixed var for alpha {fixed_param} not found"
+            assert idx_var.shape[0] == 1, f"fixed var for alpha {fixed_param} found multiple times"
+            idx_var = idx_var[0]
+            self.alpha_mu.grad[idx_var] = torch.zeros(1)
+
+        # Note only mean fixed for now
+        for fixed_param in fixed_param_zeta:
+            idx_var = np.where(np.array(self.dcm_spec.mixed_param_names) == fixed_param)[0]
+            assert idx_var.shape[0] > 0, f"fixed var for zeta {fixed_param} not found"
+            assert idx_var.shape[0] == 1, f"fixed var for zeta {fixed_param} found multiple times"
+            idx_var = idx_var[0]
+            self.zeta_mu.grad[idx_var] = torch.zeros(1)
+
+
+
+    def infer(self, max_iter=50, seed=None, skip_std_err=False, tolerance_grad=1e-9, tolerance_change=1e-12, history_size=100, fixed_params=[]):
  
         self.to(self.device)
         self.train()  # enable training mode
@@ -247,6 +272,7 @@ class TorchMXLMSLE(nn.Module):
             optimizer.zero_grad()
             objective = self.loglikelihood(self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag)
             objective.backward()
+            self.mask_fixed_parameters(fixed_params)
             return objective
         
         optimizer.step(closure)
