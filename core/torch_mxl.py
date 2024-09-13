@@ -437,7 +437,29 @@ class TorchMXL(nn.Module):
 
         return elbo
 
-    def infer(self, num_epochs=10000, learning_rate=1e-2, return_all_results=False, true_alpha=None, true_beta=None, true_beta_resp=None):
+    def mask_fixed_parameters(self, fixed_params):
+        """masks gradient of parameters specified in fixed_params. For random params, only the mean is masked for now."""
+        fixed_param_alpha = [x for x in fixed_params if x in self.dcm_spec.fixed_param_names]
+        fixed_param_zeta = [x for x in fixed_params if x in self.dcm_spec.mixed_param_names]
+        # TODO: log if param is in neither
+
+        for fixed_param in fixed_param_alpha:
+            idx_var = np.where(np.array(self.dcm_spec.fixed_param_names) == fixed_param)[0]
+            assert idx_var.shape[0] > 0, f"fixed var for alpha {fixed_param} not found"
+            assert idx_var.shape[0] == 1, f"fixed var for alpha {fixed_param} found multiple times"
+            idx_var = idx_var[0]
+            self.alpha_mu.grad[idx_var] = torch.zeros(1)
+
+        # Note only mean fixed for now
+        for fixed_param in fixed_param_zeta:
+            idx_var = np.where(np.array(self.dcm_spec.mixed_param_names) == fixed_param)[0]
+            assert idx_var.shape[0] > 0, f"fixed var for zeta {fixed_param} not found"
+            assert idx_var.shape[0] == 1, f"fixed var for zeta {fixed_param} found multiple times"
+            idx_var = idx_var[0]
+            self.zeta_mu.grad[idx_var] = torch.zeros(1)
+
+
+    def infer(self, num_epochs=10000, learning_rate=1e-2, return_all_results=False, true_alpha=None, true_beta=None, true_beta_resp=None, fixed_params=[]):
         """
         Performs variational inference (amortized variational inference if use_inference_net is set to True).
 
@@ -496,6 +518,7 @@ class TorchMXL(nn.Module):
                                  indices)
 
                 elbo.backward()
+                self.mask_fixed_parameters(fixed_params)
                 optimizer.step()
 
                 if not epoch % 100:
