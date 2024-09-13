@@ -91,7 +91,7 @@ class TorchMXLMSLE(nn.Module):
             self.numpy_dtype = np.float32
 
         self.num_draws = int(num_draws)
-        self.seed = 7777777
+        self.seed = 1234567
         self.include_correlations = include_correlations
         self.log_normal_params = log_normal_params
         self.loglik_values = []
@@ -206,6 +206,8 @@ class TorchMXLMSLE(nn.Module):
         self.uniform_normal_draws = dist.draw(
             self.num_draws * self.num_resp
         ).reshape([self.num_resp, self.num_draws, self.num_mixed_params]).to(device=self.device)
+        assert not torch.isinf(self.uniform_normal_draws).any(),\
+            f"Got infinite uniform normals for seed {self.seed}, check what is happening in engine"
 
 
     def calculate_std_errors(self):
@@ -228,6 +230,7 @@ class TorchMXLMSLE(nn.Module):
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Done calculating std errors")
         return stderr.detach().cpu().numpy()
 
+
     def mask_fixed_parameters(self, fixed_params):
         """masks gradient of parameters specified in fixed_params. For random params, only the mean is masked for now."""
         fixed_param_alpha = [x for x in fixed_params if x in self.dcm_spec.fixed_param_names]
@@ -248,7 +251,6 @@ class TorchMXLMSLE(nn.Module):
             assert idx_var.shape[0] == 1, f"fixed var for zeta {fixed_param} found multiple times"
             idx_var = idx_var[0]
             self.zeta_mu.grad[idx_var] = torch.zeros(1)
-
 
 
     def infer(self, max_iter=50, seed=None, skip_std_err=False, tolerance_grad=1e-9, tolerance_change=1e-12, history_size=100, fixed_params=[]):
