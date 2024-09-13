@@ -295,6 +295,7 @@ class TorchMXLMSLE(nn.Module):
             results['stderr'] = self.calculate_std_errors()
         if len(self.log_normal_params):
             results['lognormal_params'] = self.log_normal_params
+        results['fixed_params'] = fixed_params
         results['loglike_values'] = self.loglik_values
         # optimizer state info
         results['optimizer_settings'] = optimizer.defaults
