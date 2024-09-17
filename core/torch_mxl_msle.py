@@ -435,7 +435,7 @@ class TorchMXLMSLE(nn.Module):
         return results
 
 
-def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag, print_debug=True):
+def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
 
     global mxl
     if mxl.dcm_spec.model_type == "MNL":
@@ -452,10 +452,6 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag, print_
         )
         zeta_cov_tril[mxl.tril_indices_zeta[0], mxl.tril_indices_zeta[1]] = zeta_cov_offdiag
         zeta_cov_tril += torch.diag_embed(mxl.softplus(zeta_cov_diag))
-
-        # torch.manual_seed(self.seed)
-        # q_zeta = td.MultivariateNormal(zeta_mu, scale_tril=torch.tril(zeta_cov_tril))
-        # betas = q_zeta.rsample(sample_shape=torch.Size([self.num_resp, self.num_draws]))
         betas = mxl.uniform_normal_draws @ torch.tril(zeta_cov_tril) + zeta_mu
 
         sampled_probs = torch.zeros(mxl.num_resp, device=mxl.device, dtype=mxl.torch_dtype)
@@ -476,6 +472,21 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag, print_
     mxl.loglik_val = loglik_total
 
     return -loglik_total
+
+
+def calculate_std_errors_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
+    global mxl
+    if mxl.dcm_spec.model_type == "MNL":
+        # print("No std errors for MNL yet, just get rid of hstack in full_hession below")
+        return None
+    if mxl.include_correlations:
+        arg_nums_ = (0, 1, 2, 3)
+    else:
+        arg_nums_ = (0, 1, 2)
+    hess_ = torch.func.hessian(loglikelihood_jit, argnums=arg_nums_)(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag)
+    full_hessian = torch.vstack([torch.hstack(x) for x in hess_])
+    stderr = torch.sqrt(torch.linalg.diagonal(torch.linalg.inv(full_hessian)))
+    return stderr
 
 
 # TODO: Quick hack to work around jit problems at module level, use jit.Module and remove this
@@ -544,6 +555,8 @@ def infer_jit(
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Optimization done, final LL = {mxl.loglik_val.item():.2f}")
     # print('Elapsed time:', toc, '\n')
 
+    # TODO: might have to calculate final LL here, use no_grad
+
     # prepare python dictionary of results to output
     results = {}
     results["Estimation time"] = toc
@@ -555,8 +568,6 @@ def infer_jit(
         results["zeta_cov_offdiag"] = mxl.zeta_cov_offdiag.detach().cpu().numpy()
         results["zeta_names"] = mxl.dcm_spec.mixed_param_names
     results["Loglikelihood"] = mxl.loglik_val.item()
-    if not skip_std_err:
-        results["stderr"] = mxl.calculate_std_errors()
     if len(mxl.log_normal_params):
         results["lognormal_params"] = mxl.log_normal_params
     results["fixed_params"] = fixed_params
@@ -566,5 +577,11 @@ def infer_jit(
     k = list(optimizer.__dict__["state"].keys())[0]
     results["number_of_iterations"] = optimizer.__dict__["state"][k]["n_iter"]
     results["flat_grad"] = optimizer.state[k]["prev_flat_grad"].detach().cpu().numpy()
+
+    if not skip_std_err:
+        traced_std_errors = torch.jit.trace(calculate_std_errors_jit, example_input)
+        results["stderr"] = (
+            traced_std_errors(mxl.alpha_mu, mxl.zeta_mu, mxl.zeta_cov_diag, mxl.zeta_cov_offdiag).detach().cpu().numpy()
+        )
 
     return results
