@@ -579,9 +579,11 @@ def infer_jit(
     results["flat_grad"] = optimizer.state[k]["prev_flat_grad"].detach().cpu().numpy()
 
     if not skip_std_err:
+        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Calculating std errors")
         traced_std_errors = torch.jit.trace(calculate_std_errors_jit, example_input)
         results["stderr"] = (
             traced_std_errors(mxl.alpha_mu, mxl.zeta_mu, mxl.zeta_cov_diag, mxl.zeta_cov_offdiag).detach().cpu().numpy()
         )
+        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Std errors done")
 
     return results
