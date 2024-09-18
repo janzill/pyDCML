@@ -552,6 +552,7 @@ def infer_jit(
     optimizer.step(closure)
 
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Optimization done")
+    k = list(optimizer.__dict__["state"].keys())[0]
     if optimizer.__dict__["state"][k]["n_iter"] == max_iter:
         print("WARNING - maxiter reached without convergence!")
 
@@ -572,7 +573,6 @@ def infer_jit(
     results["loglike_values"] = mxl.loglik_values
     # optimizer state info
     results["optimizer_settings"] = optimizer.defaults
-    k = list(optimizer.__dict__["state"].keys())[0]
     results["number_of_iterations"] = optimizer.__dict__["state"][k]["n_iter"]
     results["flat_grad"] = optimizer.state[k]["prev_flat_grad"].detach().cpu().numpy()
 
