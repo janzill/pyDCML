@@ -545,21 +545,19 @@ def infer_jit(
         print(f"zeta_cov_diag = {mxl.zeta_cov_diag.detach().cpu().numpy().tolist()}")
         if mxl.include_correlations:
             print(f"zeta_cov_offdiag = {mxl.zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
-        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  LL = {mxl.loglik_val.item():.2f}")
-        mxl.loglik_values.append(mxl.loglik_val.item())
+        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  LL = {objective.item():.2f}")
+        mxl.loglik_values.append(objective.item())
         return objective
 
     optimizer.step(closure)
 
-    toc = time.time() - tic
-    print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Optimization done, final LL = {mxl.loglik_val.item():.2f}")
-    # print('Elapsed time:', toc, '\n')
-
-    # TODO: might have to calculate final LL here, use no_grad
+    print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Optimization done")
+    if optimizer.__dict__["state"][k]["n_iter"] == max_iter:
+        print("WARNING - maxiter reached without convergence!")
 
     # prepare python dictionary of results to output
     results = {}
-    results["Estimation time"] = toc
+    results["Estimation time"] = time.time() - tic
     results["Est. alpha"] = mxl.alpha_mu.detach().cpu().numpy()
     results["alpha_names"] = mxl.dcm_spec.fixed_param_names
     if mxl.dcm_spec.model_type != "MNL":
