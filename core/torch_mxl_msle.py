@@ -514,8 +514,7 @@ def calculate_std_errors(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag, fix
     if mxl.dcm_spec.model_type == "MNL":
         ll_partial = lambda x: loglikelihood_jit(x, zeta_mu, zeta_cov_diag, zeta_cov_offdiag)
         hessian = torch.autograd.functional.hessian(ll_partial, (alpha_mu), create_graph=False)
-
-    if mxl.include_correlations:
+    elif mxl.include_correlations:
         hessian = torch.autograd.functional.hessian(
             loglikelihood_jit, (alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag), create_graph=False
         )
@@ -524,7 +523,6 @@ def calculate_std_errors(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag, fix
         hessian = torch.autograd.functional.hessian(ll_partial, (alpha_mu, zeta_mu, zeta_cov_diag), create_graph=False)
 
     with torch.no_grad():
-        # TODO: DO WE NEED TO MASK FIXED PARAMS HERE?
         if mxl.dcm_spec.model_type == "MNL":
             full_hessian = hessian
         else:
