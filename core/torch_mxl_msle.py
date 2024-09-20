@@ -439,7 +439,7 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
 
     global mxl
     if mxl.dcm_spec.model_type == "MNL":
-        beta_resp = mxl.gather_parameters_for_MNL_kernel(alpha_mu, None)  # , indices)
+        beta_resp = mxl.gather_parameters_for_MNL_kernel(alpha_mu, None)
         utilities = mxl.compute_utilities(beta_resp, mxl.train_x, mxl.alt_av_mat_cuda, mxl.alt_ids_cuda)
         probs = td.Categorical(logits=utilities).log_prob(mxl.train_y.transpose(0, 1)).exp()  # log_prob works with mask
         probs = torch.where(mxl.mask_cuda.T, probs, probs.new_ones(()))  # use mask to filter out missing menus
@@ -457,7 +457,7 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
         sampled_probs = torch.zeros(mxl.num_resp, device=mxl.device, dtype=mxl.torch_dtype)
 
         for i in range(mxl.num_draws):
-            beta_resp = mxl.gather_parameters_for_MNL_kernel(alpha_mu, betas[:, i])  # , indices)
+            beta_resp = mxl.gather_parameters_for_MNL_kernel(alpha_mu, betas[:, i])
             utilities = mxl.compute_utilities(beta_resp, mxl.train_x, mxl.alt_av_mat_cuda, mxl.alt_ids_cuda)
             # TODO: maybe go from log_prob(choices).exp() to prob() and then select chosen options
             probs = (
@@ -477,8 +477,8 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
 def calculate_std_errors_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
     global mxl
     if mxl.dcm_spec.model_type == "MNL":
-        # print("No std errors for MNL yet, just get rid of hstack in full_hession below")
-        return None
+        ll_partial = lambda x: loglikelihood_jit(x, zeta_mu, zeta_cov_diag, zeta_cov_offdiag)
+        hessian = torch.autograd.functional.hessian(ll_partial, alpha_mu, create_graph=False)
 
     if mxl.include_correlations:
         hessian = torch.autograd.functional.hessian(
@@ -489,7 +489,10 @@ def calculate_std_errors_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag)
         hessian = torch.autograd.functional.hessian(ll_partial, (alpha_mu, zeta_mu, zeta_cov_diag), create_graph=False)
 
     with torch.no_grad():
-        full_hessian = torch.vstack([torch.hstack(x) for x in hessian])
+        if mxl.dcm_spec.model_type == "MNL":
+            full_hessian = hessian
+        else:
+            full_hessian = torch.vstack([torch.hstack(x) for x in hessian])
         # This is defined in order of construction of nn.Parameters (same order as passed into loglikelihood)
         stderr = torch.sqrt(torch.linalg.diagonal(torch.linalg.inv(full_hessian)))
 
@@ -532,12 +535,20 @@ def infer_jit(
         mxl.generate_draws()
 
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  JIT start")
-    example_input = (
-        torch.zeros_like(mxl.alpha_mu),
-        torch.zeros_like(mxl.zeta_mu),
-        torch.zeros_like(mxl.zeta_cov_diag),
-        torch.zeros_like(mxl.zeta_cov_offdiag),
-    )
+    if mxl.dcm_spec.model_type != "MNL":
+        example_input = (
+            torch.zeros_like(mxl.alpha_mu),
+            torch.zeros_like(mxl.zeta_mu),
+            torch.zeros_like(mxl.zeta_cov_diag),
+            torch.zeros_like(mxl.zeta_cov_offdiag),
+        )
+    else:
+        example_input = (
+            torch.zeros_like(mxl.alpha_mu),
+            torch.zeros(1),
+            torch.zeros(1),
+            torch.zeros(1),
+        )
     traced_loglikelihood = torch.jit.trace(loglikelihood_jit, example_input)
     traced_std_errors = torch.jit.trace(calculate_std_errors_jit, example_input)
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  JIT done")
@@ -549,10 +560,11 @@ def infer_jit(
         mxl.mask_fixed_parameters(fixed_params)
         # TODO: set up proper logging
         print(f"alpha = {mxl.alpha_mu.detach().cpu().numpy().tolist()}")
-        print(f"zeta = {mxl.zeta_mu.detach().cpu().numpy().tolist()}")
-        print(f"zeta_cov_diag = {mxl.zeta_cov_diag.detach().cpu().numpy().tolist()}")
-        if mxl.include_correlations:
-            print(f"zeta_cov_offdiag = {mxl.zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
+        if mxl.dcm_spec.model_type != "MNL":
+            print(f"zeta = {mxl.zeta_mu.detach().cpu().numpy().tolist()}")
+            print(f"zeta_cov_diag = {mxl.zeta_cov_diag.detach().cpu().numpy().tolist()}")
+            if mxl.include_correlations:
+                print(f"zeta_cov_offdiag = {mxl.zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  LL = {objective.item():.2f}")
         mxl.loglik_values.append(objective.item())
         return objective
