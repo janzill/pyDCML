@@ -502,7 +502,7 @@ def mask_hessian(full_hessian, fixed_params):
     full_hessian[:,fixed_indeces] = torch.zeros_like(full_hessian[:,fixed_indeces])
     full_hessian[fixed_indeces,:] = torch.zeros_like(full_hessian[fixed_indeces,:])
     # the following makes std errors 1 for fixed params, numerically convenient and we'll ignore it in results
-    full_hessian[fixed_indeces, fixed_indeces] = torch.tensor(1)
+    full_hessian[fixed_indeces, fixed_indeces] = torch.ones((fixed_indeces, fixed_indeces))
 
     return full_hessian
     
