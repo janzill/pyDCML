@@ -502,11 +502,9 @@ def mask_hessian(full_hessian, fixed_params):
     full_hessian[:,fixed_indeces] = torch.zeros_like(full_hessian[:,fixed_indeces])
     full_hessian[fixed_indeces,:] = torch.zeros_like(full_hessian[fixed_indeces,:])
     # the following makes std errors 1 for fixed params, numerically convenient and we'll ignore it in results
-    full_hessian[fixed_indeces, fixed_indeces] = torch.ones((fixed_indeces, fixed_indeces))
+    full_hessian[fixed_indeces, fixed_indeces] = torch.ones((len(fixed_indeces), len(fixed_indeces)))
 
     return full_hessian
-    
-        
 
 
 def calculate_std_errors(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag, fixed_params):
