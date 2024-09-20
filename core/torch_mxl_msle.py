@@ -474,11 +474,46 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
     return -loglik_total
 
 
-def calculate_std_errors(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
+def mask_hessian(full_hessian, fixed_params):
+    global mxl
+    """masks hessian to account for fixed params. for mixed params, only mean can be mixed."""
+    fixed_param_alpha = [x for x in fixed_params if x in mxl.dcm_spec.fixed_param_names]
+    fixed_param_zeta = [x for x in fixed_params if x in mxl.dcm_spec.mixed_param_names]
+    # TODO: log if param is in neither
+
+    fixed_indeces = []
+
+    for fixed_param in fixed_param_alpha:
+        idx_var = np.where(np.array(mxl.dcm_spec.fixed_param_names) == fixed_param)[0]
+        assert idx_var.shape[0] > 0, f"fixed var for alpha {fixed_param} not found"
+        assert idx_var.shape[0] == 1, f"fixed var for alpha {fixed_param} found multiple times"
+        idx_var = idx_var[0]
+        fixed_indeces.append(idx_var)
+
+    # Note only mean fixed for now
+    idx_shift = len(mxl.dcm_spec.fixed_param_names)
+    for fixed_param in fixed_param_zeta:
+        idx_var = np.where(np.array(mxl.dcm_spec.mixed_param_names) == fixed_param)[0]
+        assert idx_var.shape[0] > 0, f"fixed var for zeta {fixed_param} not found"
+        assert idx_var.shape[0] == 1, f"fixed var for zeta {fixed_param} found multiple times"
+        idx_var = idx_var[0] + idx_shift
+        fixed_indeces.append(idx_var)
+
+    full_hessian[:,fixed_indeces] = torch.zeros_like(full_hessian[:,fixed_indeces])
+    full_hessian[fixed_indeces,:] = torch.zeros_like(full_hessian[fixed_indeces,:])
+    # the following makes std errors 1 for fixed params, numerically convenient and we'll ignore it in results
+    full_hessian[fixed_indeces, fixed_indeces] = torch.tensor(1)
+
+    return full_hessian
+    
+        
+
+
+def calculate_std_errors(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag, fixed_params):
     global mxl
     if mxl.dcm_spec.model_type == "MNL":
         ll_partial = lambda x: loglikelihood_jit(x, zeta_mu, zeta_cov_diag, zeta_cov_offdiag)
-        hessian = torch.autograd.functional.hessian(ll_partial, alpha_mu, create_graph=False)
+        hessian = torch.autograd.functional.hessian(ll_partial, (alpha_mu), create_graph=False)
 
     if mxl.include_correlations:
         hessian = torch.autograd.functional.hessian(
@@ -489,10 +524,14 @@ def calculate_std_errors(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
         hessian = torch.autograd.functional.hessian(ll_partial, (alpha_mu, zeta_mu, zeta_cov_diag), create_graph=False)
 
     with torch.no_grad():
+        # TODO: DO WE NEED TO MASK FIXED PARAMS HERE?
         if mxl.dcm_spec.model_type == "MNL":
             full_hessian = hessian
         else:
             full_hessian = torch.vstack([torch.hstack(x) for x in hessian])
+
+        full_hessian = mask_hessian(full_hessian, fixed_params)
+
         # This is defined in order of construction of nn.Parameters (same order as passed into loglikelihood)
         stderr = torch.sqrt(torch.linalg.diagonal(torch.linalg.inv(full_hessian)))
 
@@ -598,7 +637,7 @@ def infer_jit(
     if not skip_std_err:
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Calculating std errors")
         results["stderr"] = (
-            calculate_std_errors(mxl.alpha_mu, mxl.zeta_mu, mxl.zeta_cov_diag, mxl.zeta_cov_offdiag).detach().cpu().numpy()
+            calculate_std_errors(mxl.alpha_mu, mxl.zeta_mu, mxl.zeta_cov_diag, mxl.zeta_cov_offdiag, fixed_params).detach().cpu().numpy()
         )
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Std errors done")
 
