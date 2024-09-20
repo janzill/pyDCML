@@ -434,30 +434,6 @@ class TorchMXLMSLE(nn.Module):
 
         return results
 
-    def stderr_lbfgs_approxmiation(self, optimizer):
-        # https://github.com/pytorch/pytorch/blob/main/torch/optim/lbfgs.py
-        # https://en.wikipedia.org/wiki/Broyden%E2%80%93Fletcher%E2%80%93Goldfarb%E2%80%93Shanno_algorithm#Algorithm
-        # y is old_dirs, s is old_stps, s^Ty is ys (==y^Ts), optimizer also saves rho which is 1/ys
-        state = optimizer.state[list(optimizer.state.keys())[0]]
-        old_dirs = state["old_dirs"]
-        old_stps = state["old_stps"]
-        ro = state["ro"]
-        num_old = len(old_dirs)
-
-        # initial solution of inverse Hessian:
-        H = []
-        H.append(ro[0] * torch.mm(old_stps[0].reshape(-1, 1), old_stps[0].reshape(1, -1)))
-        for i in range(1, num_old):
-            H_prev = H[i - 1]
-            s_times_s_T = torch.mm(old_stps[i].reshape(-1, 1), old_stps[i].reshape(1, -1))
-            s_times_y_T = torch.mm(old_stps[i].reshape(-1, 1), old_dirs[i].reshape(1, -1))
-            prefac = 1.0 + ro[i] * torch.mm(old_dirs[1].reshape(1, -1), torch.mm(H[0], old_dirs[1].reshape(-1, 1)))
-            H_new = prefac * s_times_s_T + torch.mm(s_times_y_T, H_prev - H_prev.T)
-            H.append(H_prev + ro[i] * H_new)
-
-        std_err = np.sqrt(torch.diagonal(H[-1]))
-        return std_err
-
 
 def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
 
@@ -503,13 +479,20 @@ def calculate_std_errors_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag)
     if mxl.dcm_spec.model_type == "MNL":
         # print("No std errors for MNL yet, just get rid of hstack in full_hession below")
         return None
+
     if mxl.include_correlations:
-        arg_nums_ = (0, 1, 2, 3)
+        hessian = torch.autograd.functional.hessian(
+            loglikelihood_jit, (alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag), create_graph=False
+        )
     else:
-        arg_nums_ = (0, 1, 2)
-    hess_ = torch.func.hessian(loglikelihood_jit, argnums=arg_nums_)(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag)
-    full_hessian = torch.vstack([torch.hstack(x) for x in hess_])
-    stderr = torch.sqrt(torch.linalg.diagonal(torch.linalg.inv(full_hessian)))
+        ll_partial = lambda x, y, z: loglikelihood_jit(x, y, z, zeta_cov_offdiag)
+        hessian = torch.autograd.functional.hessian(ll_partial, (alpha_mu, zeta_mu, zeta_cov_diag), create_graph=False)
+
+    with torch.no_grad():
+        full_hessian = torch.vstack([torch.hstack(x) for x in hessian])
+        # This is defined in order of construction of nn.Parameters (same order as passed into loglikelihood)
+        stderr = torch.sqrt(torch.linalg.diagonal(torch.linalg.inv(full_hessian)))
+
     return stderr
 
 
@@ -556,6 +539,7 @@ def infer_jit(
         torch.zeros_like(mxl.zeta_cov_offdiag),
     )
     traced_loglikelihood = torch.jit.trace(loglikelihood_jit, example_input)
+    traced_std_errors = torch.jit.trace(calculate_std_errors_jit, example_input)
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  JIT done")
 
     def closure():
@@ -602,12 +586,9 @@ def infer_jit(
 
     if not skip_std_err:
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Calculating std errors")
-        traced_std_errors = torch.jit.trace(calculate_std_errors_jit, example_input)
         results["stderr"] = (
             traced_std_errors(mxl.alpha_mu, mxl.zeta_mu, mxl.zeta_cov_diag, mxl.zeta_cov_offdiag).detach().cpu().numpy()
         )
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Std errors done")
-    else:
-        results["stderr"] = mxl.stderr_lbfgs_approxmiation(optimizer)
 
     return results
