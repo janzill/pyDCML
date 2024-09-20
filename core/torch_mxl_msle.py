@@ -474,7 +474,7 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
     return -loglik_total
 
 
-def calculate_std_errors_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
+def calculate_std_errors(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
     global mxl
     if mxl.dcm_spec.model_type == "MNL":
         ll_partial = lambda x: loglikelihood_jit(x, zeta_mu, zeta_cov_diag, zeta_cov_offdiag)
@@ -550,7 +550,6 @@ def infer_jit(
             torch.zeros(1),
         )
     traced_loglikelihood = torch.jit.trace(loglikelihood_jit, example_input)
-    traced_std_errors = torch.jit.trace(calculate_std_errors_jit, example_input)
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  JIT done")
 
     def closure():
@@ -599,7 +598,7 @@ def infer_jit(
     if not skip_std_err:
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Calculating std errors")
         results["stderr"] = (
-            traced_std_errors(mxl.alpha_mu, mxl.zeta_mu, mxl.zeta_cov_diag, mxl.zeta_cov_offdiag).detach().cpu().numpy()
+            calculate_std_errors(mxl.alpha_mu, mxl.zeta_mu, mxl.zeta_cov_diag, mxl.zeta_cov_offdiag).detach().cpu().numpy()
         )
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Std errors done")
 
