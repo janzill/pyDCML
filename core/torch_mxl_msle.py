@@ -103,6 +103,8 @@ class TorchMXLMSLE(nn.Module):
 
         self.num_draws = int(num_draws)
         self.seed = 1234567
+        self.redraw = True
+        self.correlated_normal_draws = False
         self.include_correlations = include_correlations
         self.log_normal_params = log_normal_params
         self.loglik_values = []
@@ -224,13 +226,17 @@ class TorchMXLMSLE(nn.Module):
         return -loglik_total
 
     def generate_draws(self):
-        # TODO: check if we need to draw per person to keep correlation structure or if reshaping is ok here
-        dist = NormalQMCEngine(self.num_mixed_params, seed=self.seed)
-        self.uniform_normal_draws = (
-            dist.draw(self.num_draws * self.num_resp)
-            .reshape([self.num_resp, self.num_draws, self.num_mixed_params])
-            .to(device=self.device)
-        )
+        if self.correlated_normal_draws:
+            # TODO: check if we need to draw per person to keep correlation structure or if reshaping is ok here
+            dist = NormalQMCEngine(self.num_mixed_params, seed=self.seed)
+            self.uniform_normal_draws = (
+                dist.draw(self.num_draws * self.num_resp)
+                .reshape([self.num_resp, self.num_draws, self.num_mixed_params])
+                .to(device=self.device)
+            )
+        else:
+            dist = td.Normal(torch.tensor([0.0]), torch.tensor([1.0]))
+            self.uniform_normal_draws = dist.sample((self.num_resp, self.num_draws, self.num_mixed_params)).squeeze()
         assert not torch.isinf(
             self.uniform_normal_draws
         ).any(), f"Got infinite uniform normals for seed {self.seed}, check what is happening in engine"
@@ -303,6 +309,8 @@ class TorchMXLMSLE(nn.Module):
 
         if seed is not None:
             self.seed = int(seed)
+
+        torch.manual_seed(self.seed)
 
         tic = time.time()
 
@@ -447,6 +455,8 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
         loglik_total = probs.log().sum()
     else:
         # normal to draw variables from
+        if mxl.redraw:
+            mxl.generate_draws()
         zeta_cov_tril = torch.zeros(
             (mxl.num_mixed_params, mxl.num_mixed_params), dtype=mxl.torch_dtype, device=mxl.device
         )
@@ -544,6 +554,8 @@ def infer_jit(
     tolerance_change=1e-12,
     history_size=100,
     fixed_params=[],
+    redraw=True,
+    correlated_normal_draws=False,
 ):
 
     globals()["mxl"] = mxl
@@ -562,6 +574,9 @@ def infer_jit(
 
     if seed is not None:
         mxl.seed = int(seed)
+    torch.manual_seed(mxl.seed)
+    mxl.redraw = True
+    mxl.correlated_normal_draws = correlated_normal_draws
 
     tic = time.time()
 
