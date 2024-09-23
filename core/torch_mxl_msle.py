@@ -237,9 +237,9 @@ class TorchMXLMSLE(nn.Module):
         else:
             dist = td.Normal(torch.tensor([0.0]), torch.tensor([1.0]))
             self.uniform_normal_draws = dist.sample((self.num_resp, self.num_draws, self.num_mixed_params)).squeeze()
-        assert not torch.isinf(
-            self.uniform_normal_draws
-        ).any(), f"Got infinite uniform normals for seed {self.seed}, check what is happening in engine"
+            assert not torch.isinf(
+                self.uniform_normal_draws
+            ).any(), f"Got infinite uniform normals for seed {self.seed}, check what is happening in engine"
 
     def calculate_std_errors(self):
         if self.dcm_spec.model_type == "MNL":
