@@ -575,12 +575,12 @@ def infer_jit(
     if seed is not None:
         mxl.seed = int(seed)
     torch.manual_seed(mxl.seed)
-    mxl.redraw = True
+    mxl.redraw = redraw
     mxl.correlated_normal_draws = correlated_normal_draws
 
     tic = time.time()
 
-    if mxl.dcm_spec.model_type != "MNL":
+    if (mxl.dcm_spec.model_type != "MNL") and (mxl.redraw == False):
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Generating draws")
         mxl.generate_draws()
 
