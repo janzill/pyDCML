@@ -580,7 +580,7 @@ def infer_jit(
 
     tic = time.time()
 
-    if (mxl.dcm_spec.model_type != "MNL") and (mxl.redraw == False):
+    if mxl.dcm_spec.model_type != "MNL":
         print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Generating draws")
         mxl.generate_draws()
 
