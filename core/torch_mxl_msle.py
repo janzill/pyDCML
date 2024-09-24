@@ -234,12 +234,10 @@ class TorchMXLMSLE(nn.Module):
                 .reshape([self.num_resp, self.num_draws, self.num_mixed_params])
                 .to(device=self.device)
             )
-        else:
+        # draws from NormalQMCEngine can contain infintes, revert to standard random sampling if that's the case
+        if not self.correlated_normal_draws or torch.isinf(self.uniform_normal_draws).any():
             dist = td.Normal(torch.tensor([0.0]), torch.tensor([1.0]))
             self.uniform_normal_draws = dist.sample((self.num_resp, self.num_draws, self.num_mixed_params)).squeeze()
-            assert not torch.isinf(
-                self.uniform_normal_draws
-            ).any(), f"Got infinite uniform normals for seed {self.seed}, check what is happening in engine"
 
     def calculate_std_errors(self):
         if self.dcm_spec.model_type == "MNL":
