@@ -103,8 +103,8 @@ class TorchMXLMSLE(nn.Module):
 
         self.num_draws = int(num_draws)
         self.seed = 1234567
-        self.redraw = True
-        self.correlated_normal_draws = False
+        self.redraw = False
+        self.correlated_normal_draws = True
         self.include_correlations = include_correlations
         self.log_normal_params = log_normal_params
         self.loglik_values = []
@@ -554,8 +554,8 @@ def infer_jit(
     tolerance_change=1e-12,
     history_size=100,
     fixed_params=[],
-    redraw=True,
-    correlated_normal_draws=False,
+    redraw=False,
+    correlated_normal_draws=True,
 ):
 
     globals()["mxl"] = mxl
