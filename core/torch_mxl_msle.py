@@ -449,14 +449,32 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
         loglik_total = probs.log().sum()
     else:
         # normal to draw variables from
-        if mxl.redraw:
-            mxl.generate_draws()
-        zeta_cov_tril = torch.zeros(
-            (mxl.num_mixed_params, mxl.num_mixed_params), dtype=mxl.torch_dtype, device=mxl.device
-        )
-        zeta_cov_tril[mxl.tril_indices_zeta[0], mxl.tril_indices_zeta[1]] = zeta_cov_offdiag
-        zeta_cov_tril += torch.diag_embed(mxl.softplus(zeta_cov_diag))
-        betas = mxl.uniform_normal_draws @ torch.tril(zeta_cov_tril) + zeta_mu
+        #if mxl.redraw:
+        #    mxl.generate_draws()
+        #zeta_cov_tril = torch.zeros(
+        #    (mxl.num_mixed_params, mxl.num_mixed_params), dtype=mxl.torch_dtype, device=mxl.device
+        #)
+        #zeta_cov_tril[mxl.tril_indices_zeta[0], mxl.tril_indices_zeta[1]] = zeta_cov_offdiag
+        #zeta_cov_tril += torch.diag_embed(mxl.softplus(zeta_cov_diag))
+        #betas = mxl.uniform_normal_draws @ torch.tril(zeta_cov_tril) + zeta_mu
+
+        torch.manual_seed(mxl.seed)
+        # betas by drawing for each random parameter independently, no correlations for now
+        betas = torch.zeros((mxl.num_resp, mxl.num_draws, mxl.num_mixed_params), dtype=mxl.torch_dtype, device=mxl.device)
+        for (idx, distribution_type) in enumerate(mxl.dcm_spec.mixed_params_distribution_types):
+            name = mxl.dcm_spec.mixed_param_names[idx]
+            #print(f"{name}: {distribution_type}")
+            if distribution_type == "normal":
+                draws_this_param = td.Normal(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))  # TODO: softplus here?
+            elif distribution_type == "lognormal":
+                draws_this_param = - td.Normal(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws)).exp()  # TODO: softplus here?
+            elif distribution_type == "gamma":
+                draws_this_param = - td.Gamma(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))  # TODO: softplus here?
+            #elif distribution_type == "inverse_gamma":
+            #    draws_this_param = - td.InverseGamma(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))  # TODO: softplus here?
+            else:
+                raise ValueError(f"Distribution type {distribution_type} not implemented")
+            betas[:,:,idx] = draws_this_param
 
         sampled_probs = torch.zeros(mxl.num_resp, device=mxl.device, dtype=mxl.torch_dtype)
 
@@ -480,7 +498,7 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
 
 def mask_hessian(full_hessian, fixed_params):
     global mxl
-    """masks hessian to account for fixed params. for mixed params, only mean can be mixed."""
+    """masks hessian to account for fixed params. for mixed params, only mean can be fixed."""
     fixed_param_alpha = [x for x in fixed_params if x in mxl.dcm_spec.fixed_param_names]
     fixed_param_zeta = [x for x in fixed_params if x in mxl.dcm_spec.mixed_param_names]
     # TODO: log if param is in neither
@@ -574,16 +592,16 @@ def infer_jit(
 
     tic = time.time()
 
-    if mxl.dcm_spec.model_type != "MNL":
-        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Generating draws")
-        mxl.generate_draws()
+    #if mxl.dcm_spec.model_type != "MNL":
+    #    print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Generating draws")
+    #    mxl.generate_draws()
 
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  JIT start")
     if mxl.dcm_spec.model_type != "MNL":
         example_input = (
-            torch.zeros_like(mxl.alpha_mu),
-            torch.zeros_like(mxl.zeta_mu),
-            torch.zeros_like(mxl.zeta_cov_diag),
+            torch.ones_like(mxl.alpha_mu),
+            torch.ones_like(mxl.zeta_mu),
+            torch.ones_like(mxl.zeta_cov_diag),
             torch.zeros_like(mxl.zeta_cov_offdiag),
         )
     else:
