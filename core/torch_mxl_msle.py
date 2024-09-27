@@ -83,10 +83,6 @@ class TorchMXLMSLE(nn.Module):
         self.num_params = dcm_dataset.dcm_spec.num_params
         self.num_fixed_params = len(dcm_dataset.dcm_spec.fixed_param_names)
         self.num_mixed_params = len(dcm_dataset.dcm_spec.mixed_param_names)
-        self.alt_attributes = dcm_dataset.alt_attributes
-        self.choices = dcm_dataset.true_choices
-        self.alt_availability = dcm_dataset.alt_availability
-        self.mask = dcm_dataset.mask
 
         self.device = torch.device("cuda:0" if use_cuda and torch.cuda.is_available() else "cpu")
 
@@ -104,16 +100,16 @@ class TorchMXLMSLE(nn.Module):
         self.num_draws = int(num_draws)
         self.seed = 1234567
         self.redraw = False
-        self.correlated_normal_draws = True
+        self.correlated_normal_draws = False
         self.include_correlations = include_correlations
         self.log_normal_params = log_normal_params
         self.loglik_values = []
 
         # prepare data for running inference
-        self.train_x = torch.tensor(self.alt_attributes, dtype=self.torch_dtype)
-        self.train_y = torch.tensor(self.choices, dtype=torch.int)
-        self.alt_av = torch.from_numpy(self.alt_availability)
-        self.alt_av_mat = self.alt_availability.copy()
+        self.train_x = torch.tensor(dcm_dataset.alt_attributes, dtype=self.torch_dtype)
+        self.train_y = torch.tensor(dcm_dataset.true_choices, dtype=torch.int)
+        #  self.alt_av = torch.from_numpy(dcm_dataset.alt_availability)
+        self.alt_av_mat = dcm_dataset.alt_availability.copy()
         if use_double:
             self.alt_av_mat[np.where(self.alt_av_mat == 0)] = -1e18
         else:
@@ -132,7 +128,7 @@ class TorchMXLMSLE(nn.Module):
             .repeat(self.num_menus * self.num_resp, 1)
             .T.reshape(self.num_resp, self.num_menus, -1)
         ).to(self.device)
-        self.mask_cuda = torch.tensor(self.mask, dtype=torch.bool)
+        self.mask_cuda = torch.tensor(dcm_dataset.mask, dtype=torch.bool)
 
         # setup the non-linearities
         self.softplus = nn.Softplus()
