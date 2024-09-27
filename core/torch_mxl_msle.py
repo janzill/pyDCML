@@ -464,11 +464,11 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
             name = mxl.dcm_spec.mixed_param_names[idx]
             #print(f"{name}: {distribution_type}")
             if distribution_type == "normal":
-                draws_this_param = td.Normal(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))  # TODO: softplus here?
+                draws_this_param = td.Normal(zeta_mu[idx], mxl.softplus(zeta_cov_diag[idx])).rsample((mxl.num_resp,mxl.num_draws))  # TODO: softplus here?
             elif distribution_type == "lognormal":
-                draws_this_param = - td.Normal(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws)).exp()  # TODO: softplus here?
+                draws_this_param = - td.Normal(zeta_mu[idx], mxl.softplus(zeta_cov_diag[idx])).rsample((mxl.num_resp,mxl.num_draws)).exp()  # TODO: softplus here?
             elif distribution_type == "gamma":
-                draws_this_param = - td.Gamma(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))  # TODO: softplus here?
+                draws_this_param = - td.Gamma(zeta_mu[idx], mxl.softplus(zeta_cov_diag[idx])).rsample((mxl.num_resp,mxl.num_draws))  # TODO: softplus here?
             #elif distribution_type == "inverse_gamma":
             #    draws_this_param = - td.InverseGamma(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))
             else:
