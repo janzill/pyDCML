@@ -471,7 +471,7 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
             elif distribution_type == "gamma":
                 draws_this_param = - td.Gamma(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))  # TODO: softplus here?
             #elif distribution_type == "inverse_gamma":
-            #    draws_this_param = - td.InverseGamma(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))  # TODO: softplus here?
+            #    draws_this_param = - td.InverseGamma(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))
             else:
                 raise ValueError(f"Distribution type {distribution_type} not implemented")
             betas[:,:,idx] = draws_this_param
