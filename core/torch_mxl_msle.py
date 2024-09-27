@@ -458,7 +458,6 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
         #zeta_cov_tril += torch.diag_embed(mxl.softplus(zeta_cov_diag))
         #betas = mxl.uniform_normal_draws @ torch.tril(zeta_cov_tril) + zeta_mu
 
-        torch.manual_seed(mxl.seed)
         # betas by drawing for each random parameter independently, no correlations for now
         betas = torch.zeros((mxl.num_resp, mxl.num_draws, mxl.num_mixed_params), dtype=mxl.torch_dtype, device=mxl.device)
         for (idx, distribution_type) in enumerate(mxl.dcm_spec.mixed_params_distribution_types):
@@ -616,6 +615,8 @@ def infer_jit(
 
     def closure():
         optimizer.zero_grad()
+        if not mxl.redraw:
+            torch.manual_seed(mxl.seed)  # needs to be outsided traced function
         objective = traced_loglikelihood(mxl.alpha_mu, mxl.zeta_mu, mxl.zeta_cov_diag, mxl.zeta_cov_offdiag)
         objective.backward()
         mxl.mask_fixed_parameters(fixed_params)
