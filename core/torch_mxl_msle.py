@@ -449,27 +449,35 @@ def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
         loglik_total = probs.log().sum()
     else:
         # normal to draw variables from
-        #if mxl.redraw:
+        # if mxl.redraw:
         #    mxl.generate_draws()
-        #zeta_cov_tril = torch.zeros(
+        # zeta_cov_tril = torch.zeros(
         #    (mxl.num_mixed_params, mxl.num_mixed_params), dtype=mxl.torch_dtype, device=mxl.device
-        #)
-        #zeta_cov_tril[mxl.tril_indices_zeta[0], mxl.tril_indices_zeta[1]] = zeta_cov_offdiag
-        #zeta_cov_tril += torch.diag_embed(mxl.softplus(zeta_cov_diag))
-        #betas = mxl.uniform_normal_draws @ torch.tril(zeta_cov_tril) + zeta_mu
+        # )
+        # zeta_cov_tril[mxl.tril_indices_zeta[0], mxl.tril_indices_zeta[1]] = zeta_cov_offdiag
+        # zeta_cov_tril += torch.diag_embed(mxl.softplus(zeta_cov_diag))
+        # betas = mxl.uniform_normal_draws @ torch.tril(zeta_cov_tril) + zeta_mu
 
         # betas by drawing for each random parameter independently, no correlations for now
         betas = torch.zeros((mxl.num_resp, mxl.num_draws, mxl.num_mixed_params), dtype=mxl.torch_dtype, device=mxl.device)
         for (idx, distribution_type) in enumerate(mxl.dcm_spec.mixed_params_distribution_types):
             name = mxl.dcm_spec.mixed_param_names[idx]
-            #print(f"{name}: {distribution_type}")
+            # print(f"{name}: {distribution_type}")
             if distribution_type == "normal":
-                draws_this_param = td.Normal(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))  # TODO: softplus here?
+                draws_this_param = td.Normal(zeta_mu[idx], mxl.softplus(zeta_cov_diag[idx])).rsample(
+                    (mxl.num_resp, mxl.num_draws)
+                )
             elif distribution_type == "lognormal":
-                draws_this_param = - td.Normal(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws)).exp()  # TODO: softplus here?
+                draws_this_param = (
+                    -td.Normal(zeta_mu[idx], mxl.softplus(zeta_cov_diag[idx]))
+                    .rsample((mxl.num_resp, mxl.num_draws))
+                    .exp()
+                )
             elif distribution_type == "gamma":
-                draws_this_param = - td.Gamma(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))  # TODO: softplus here?
-            #elif distribution_type == "inverse_gamma":
+                draws_this_param = -td.Gamma(zeta_mu[idx], mxl.softplus(zeta_cov_diag[idx])).rsample(
+                    (mxl.num_resp, mxl.num_draws)
+                )
+            # elif distribution_type == "inverse_gamma":
             #    draws_this_param = - td.InverseGamma(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))
             else:
                 raise ValueError(f"Distribution type {distribution_type} not implemented")
@@ -567,6 +575,7 @@ def infer_jit(
     fixed_params=[],
     redraw=False,
     correlated_normal_draws=True,
+    jit=True,
 ):
 
     globals()["mxl"] = mxl
@@ -591,27 +600,30 @@ def infer_jit(
 
     tic = time.time()
 
-    #if mxl.dcm_spec.model_type != "MNL":
+    # if mxl.dcm_spec.model_type != "MNL":
     #    print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Generating draws")
     #    mxl.generate_draws()
 
-    print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  JIT start")
-    if mxl.dcm_spec.model_type != "MNL":
-        example_input = (
-            torch.ones_like(mxl.alpha_mu),
-            torch.ones_like(mxl.zeta_mu),
-            torch.ones_like(mxl.zeta_cov_diag),
-            torch.zeros_like(mxl.zeta_cov_offdiag),
-        )
+    if jit:
+        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  JIT start")
+        if mxl.dcm_spec.model_type != "MNL":
+            example_input = (
+                torch.ones_like(mxl.alpha_mu),
+                torch.ones_like(mxl.zeta_mu),
+                torch.ones_like(mxl.zeta_cov_diag),
+                torch.zeros_like(mxl.zeta_cov_offdiag),
+            )
+        else:
+            example_input = (
+                torch.zeros_like(mxl.alpha_mu),
+                torch.zeros(1),
+                torch.zeros(1),
+                torch.zeros(1),
+            )
+        traced_loglikelihood = torch.jit.trace(loglikelihood_jit, example_input, check_trace=False)
+        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  JIT done")
     else:
-        example_input = (
-            torch.zeros_like(mxl.alpha_mu),
-            torch.zeros(1),
-            torch.zeros(1),
-            torch.zeros(1),
-        )
-    traced_loglikelihood = torch.jit.trace(loglikelihood_jit, example_input)
-    print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  JIT done")
+        traced_loglikelihood = loglikelihood_jit
 
     def closure():
         optimizer.zero_grad()
