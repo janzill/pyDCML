@@ -254,10 +254,6 @@ class TorchMXLMSLE(nn.Module):
             sampled_probs /= self.num_draws
             loglik_total = sampled_probs.log().sum()
 
-        self.loglik_val = loglik_total.item()
-        self.loglik_values.append(self.loglik_val)
-        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  loglikelihood = {self.loglik_val:.2f}")
-
         return -loglik_total
 
     def mask_hessian(self, full_hessian, fixed_params):
@@ -407,7 +403,6 @@ class TorchMXLMSLE(nn.Module):
             results["zeta_cov_diag"] = self.zeta_cov_diag.detach().cpu().numpy()
             results["zeta_cov_offdiag"] = self.zeta_cov_offdiag.detach().cpu().numpy()
             results["zeta_names"] = self.dcm_spec.mixed_param_names
-        results["Loglikelihood"] = self.loglik_val
         if len(self.log_normal_params):
             results["lognormal_params"] = self.log_normal_params
         results["fixed_params"] = fixed_params
