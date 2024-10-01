@@ -100,7 +100,7 @@ class TorchMXLMSLE(nn.Module):
         self.num_draws = int(num_draws)
         self.seed = 1234567
         self.redraw = False
-        self.correlated_normal_draws = False
+        # self.correlated_normal_draws = False
         self.include_correlations = include_correlations
         self.log_normal_params = log_normal_params
         self.loglik_values = []
@@ -169,19 +169,19 @@ class TorchMXLMSLE(nn.Module):
 
         self.tril_indices_zeta = torch.tril_indices(row=self.num_mixed_params, col=self.num_mixed_params, offset=-1)
 
-    def generate_draws(self):
-        if self.correlated_normal_draws:
-            # TODO: check if we need to draw per person to keep correlation structure or if reshaping is ok here
-            dist = NormalQMCEngine(self.num_mixed_params, seed=self.seed)
-            self.uniform_normal_draws = (
-                dist.draw(self.num_draws * self.num_resp)
-                .reshape([self.num_resp, self.num_draws, self.num_mixed_params])
-                .to(device=self.device)
-            )
-        # draws from NormalQMCEngine can contain infintes, revert to standard random sampling if that's the case
-        if not self.correlated_normal_draws or torch.isinf(self.uniform_normal_draws).any():
-            dist = td.Normal(torch.tensor([0.0]), torch.tensor([1.0]))
-            self.uniform_normal_draws = dist.sample((self.num_resp, self.num_draws, self.num_mixed_params)).squeeze()
+    # def generate_draws(self):
+    #     if self.correlated_normal_draws:
+    #         # TODO: check if we need to draw per person to keep correlation structure or if reshaping is ok here
+    #         dist = NormalQMCEngine(self.num_mixed_params, seed=self.seed)
+    #         self.uniform_normal_draws = (
+    #             dist.draw(self.num_draws * self.num_resp)
+    #             .reshape([self.num_resp, self.num_draws, self.num_mixed_params])
+    #             .to(device=self.device)
+    #         )
+    #     # draws from NormalQMCEngine can contain infintes, revert to standard random sampling if that's the case
+    #     if not self.correlated_normal_draws or torch.isinf(self.uniform_normal_draws).any():
+    #         dist = td.Normal(torch.tensor([0.0]), torch.tensor([1.0]))
+    #         self.uniform_normal_draws = dist.sample((self.num_resp, self.num_draws, self.num_mixed_params)).squeeze()
 
     def draw_betas(self, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
         if not self.redraw:
@@ -348,7 +348,6 @@ class TorchMXLMSLE(nn.Module):
         history_size=100,
         fixed_params=[],
         redraw=False,
-        correlated_normal_draws=True,
     ):
 
         self.to(self.device)
@@ -366,14 +365,14 @@ class TorchMXLMSLE(nn.Module):
 
         if seed is not None:
             self.seed = int(seed)
-
         torch.manual_seed(self.seed)
+        self.redraw = redraw
 
         tic = time.time()
 
-        if self.dcm_spec.model_type != "MNL":
-            print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Generating draws")
-            self.generate_draws()
+        # if self.dcm_spec.model_type != "MNL":
+        #     print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Generating draws")
+        #     self.generate_draws()
 
         def closure():
             optimizer.zero_grad()
@@ -382,10 +381,10 @@ class TorchMXLMSLE(nn.Module):
             self.mask_fixed_parameters(fixed_params)
             # TODO: set up proper logging
             print(f"alpha = {self.alpha_mu.detach().cpu().numpy().tolist()}")
-            if mxl.dcm_spec.model_type != "MNL":
+            if self.dcm_spec.model_type != "MNL":
                 print(f"zeta = {self.zeta_mu.detach().cpu().numpy().tolist()}")
                 print(f"zeta_cov_diag = {self.zeta_cov_diag.detach().cpu().numpy().tolist()}")
-                if mxl.include_correlations:
+                if self.include_correlations:
                     print(f"zeta_cov_offdiag = {self.zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
             print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  LL = {objective.item():.2f}")
             self.loglik_values.append(objective.item())
@@ -475,44 +474,3 @@ class TorchMXLMSLE(nn.Module):
             raise Exception("Unknown model type:", self.dcm_spec.model_type)
 
         return beta_resp
-
-    def infer_bfgs(self, max_iter=None, seed=None):
-        from torchmin import Minimizer
-
-        self.to(self.device)
-        self.train()  # enable training mode
-
-        optimizer = Minimizer(self.parameters(), method="bfgs", max_iter=max_iter)
-
-        if seed is not None:
-            self.seed = int(seed)
-
-        tic = time.time()
-        self.generate_draws()
-
-        def closure():
-            optimizer.zero_grad()
-            objective = self.loglikelihood(self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag)
-            return objective
-
-        optimizer.step(closure)
-
-        toc = time.time() - tic
-        print("Elapsed time:", toc, "\n")
-
-        # prepare python dictionary of results to output
-        results = {}
-        results["Estimation time"] = toc
-        results["Est. alpha"] = self.alpha_mu.detach().cpu().numpy()
-        results["alpha_names"] = self.dcm_spec.fixed_param_names
-        if self.dcm_spec.model_type != "MNL":
-            results["Est. zeta"] = self.zeta_mu.detach().cpu().numpy()
-            results["zeta_cov_diag"] = self.zeta_cov_diag.detach().cpu().numpy()
-            results["zeta_cov_offdiag"] = self.zeta_cov_offdiag.detach().cpu().numpy()
-            results["zeta_names"] = self.dcm_spec.mixed_param_names
-        results["Loglikelihood"] = self.loglik_val
-        results["stderr"] = torch.sqrt(torch.linalg.diagonal(optimizer._result["hess_inv"])).detach().cpu().numpy()
-        if len(self.log_normal_params):
-            results["lognormal_params"] = self.log_normal_params
-
-        return results
