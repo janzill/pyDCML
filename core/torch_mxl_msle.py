@@ -169,10 +169,66 @@ class TorchMXLMSLE(nn.Module):
 
         self.tril_indices_zeta = torch.tril_indices(row=self.num_mixed_params, col=self.num_mixed_params, offset=-1)
 
-    def loglikelihood(self, alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag, print_debug=True):
+    def generate_draws(self):
+        if self.correlated_normal_draws:
+            # TODO: check if we need to draw per person to keep correlation structure or if reshaping is ok here
+            dist = NormalQMCEngine(self.num_mixed_params, seed=self.seed)
+            self.uniform_normal_draws = (
+                dist.draw(self.num_draws * self.num_resp)
+                .reshape([self.num_resp, self.num_draws, self.num_mixed_params])
+                .to(device=self.device)
+            )
+        # draws from NormalQMCEngine can contain infintes, revert to standard random sampling if that's the case
+        if not self.correlated_normal_draws or torch.isinf(self.uniform_normal_draws).any():
+            dist = td.Normal(torch.tensor([0.0]), torch.tensor([1.0]))
+            self.uniform_normal_draws = dist.sample((self.num_resp, self.num_draws, self.num_mixed_params)).squeeze()
+
+    def draw_betas(self, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
+        if not self.redraw:
+            torch.manual_seed(self.seed)
+
+        # # normal to draw variables from
+        # zeta_cov_tril = torch.zeros(
+        #     (self.num_mixed_params, self.num_mixed_params), dtype=self.torch_dtype, device=self.device
+        # )
+        # zeta_cov_tril[self.tril_indices_zeta[0], self.tril_indices_zeta[1]] = zeta_cov_offdiag
+        # zeta_cov_tril += torch.diag_embed(self.softplus(zeta_cov_diag))
+        # # torch.manual_seed(self.seed)
+        # # q_zeta = td.MultivariateNormal(zeta_mu, scale_tril=torch.tril(zeta_cov_tril))
+        # # betas = q_zeta.rsample(sample_shape=torch.Size([self.num_resp, self.num_draws]))
+        # betas = self.uniform_normal_draws @ torch.tril(zeta_cov_tril) + zeta_mu
+        # return betas
+        betas = torch.zeros(
+            (self.num_resp, self.num_draws, self.num_mixed_params), dtype=self.torch_dtype, device=self.device
+        )
+        for idx, distribution_type in enumerate(self.dcm_spec.mixed_params_distribution_types):
+            name = self.dcm_spec.mixed_param_names[idx]
+            # print(f"{name}: {distribution_type}")
+            if distribution_type == "normal":
+                draws_this_param = td.Normal(zeta_mu[idx], self.softplus(zeta_cov_diag[idx])).rsample(
+                    (self.num_resp, self.num_draws)
+                )
+            elif distribution_type == "lognormal":
+                draws_this_param = (
+                    -td.Normal(zeta_mu[idx], self.softplus(zeta_cov_diag[idx]))
+                    .rsample((self.num_resp, self.num_draws))
+                    .exp()
+                )
+            elif distribution_type == "gamma":
+                draws_this_param = -td.Gamma(zeta_mu[idx], self.softplus(zeta_cov_diag[idx])).rsample(
+                    (self.num_resp, self.num_draws)
+                )
+            # elif distribution_type == "inverse_gamma":
+            #    draws_this_param = - td.InverseGamma(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))
+            else:
+                raise ValueError(f"Distribution type {distribution_type} not implemented")
+            betas[:, :, idx] = draws_this_param
+        return betas
+
+    def loglikelihood(self, alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
 
         if self.dcm_spec.model_type == "MNL":
-            beta_resp = self.gather_parameters_for_MNL_kernel(alpha_mu, None)  # , indices)
+            beta_resp = self.gather_parameters_for_MNL_kernel(alpha_mu, None)
             utilities = self.compute_utilities(beta_resp, self.train_x, self.alt_av_mat_cuda, self.alt_ids_cuda)
             probs = (
                 td.Categorical(logits=utilities).log_prob(self.train_y.transpose(0, 1)).exp()
@@ -181,24 +237,7 @@ class TorchMXLMSLE(nn.Module):
             probs = probs.prod(axis=0)  # multiply probs over menus
             loglik_total = probs.log().sum()
         else:
-            # #  DEBUG - TODO: set up proper logging
-            # if print_debug:  # not possible for hessian comp
-            #     print(f"before drawing - alpha = {alpha_mu.detach().cpu().numpy().tolist()}")
-            #     print(f"before drawing - zeta = {zeta_mu.detach().cpu().numpy().tolist()}")
-            #     print(f"before drawing - zeta_cov_diag = {zeta_cov_diag.detach().cpu().numpy().tolist()}")
-            #     if self.include_correlations:
-            #         print(f"before drawing - zeta_cov_offdiag = {zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
-            # normal to draw variables from
-            zeta_cov_tril = torch.zeros(
-                (self.num_mixed_params, self.num_mixed_params), dtype=self.torch_dtype, device=self.device
-            )
-            zeta_cov_tril[self.tril_indices_zeta[0], self.tril_indices_zeta[1]] = zeta_cov_offdiag
-            zeta_cov_tril += torch.diag_embed(self.softplus(zeta_cov_diag))
-
-            # torch.manual_seed(self.seed)
-            # q_zeta = td.MultivariateNormal(zeta_mu, scale_tril=torch.tril(zeta_cov_tril))
-            # betas = q_zeta.rsample(sample_shape=torch.Size([self.num_resp, self.num_draws]))
-            betas = self.uniform_normal_draws @ torch.tril(zeta_cov_tril) + zeta_mu
+            betas = self.draw_betas(zeta_mu, zeta_cov_diag, zeta_cov_offdiag)
 
             sampled_probs = torch.zeros(self.num_resp, device=self.device, dtype=self.torch_dtype)
 
@@ -221,40 +260,62 @@ class TorchMXLMSLE(nn.Module):
 
         return -loglik_total
 
-    def generate_draws(self):
-        if self.correlated_normal_draws:
-            # TODO: check if we need to draw per person to keep correlation structure or if reshaping is ok here
-            dist = NormalQMCEngine(self.num_mixed_params, seed=self.seed)
-            self.uniform_normal_draws = (
-                dist.draw(self.num_draws * self.num_resp)
-                .reshape([self.num_resp, self.num_draws, self.num_mixed_params])
-                .to(device=self.device)
-            )
-        # draws from NormalQMCEngine can contain infintes, revert to standard random sampling if that's the case
-        if not self.correlated_normal_draws or torch.isinf(self.uniform_normal_draws).any():
-            dist = td.Normal(torch.tensor([0.0]), torch.tensor([1.0]))
-            self.uniform_normal_draws = dist.sample((self.num_resp, self.num_draws, self.num_mixed_params)).squeeze()
+    def mask_hessian(self, full_hessian, fixed_params):
+        """masks hessian to account for fixed params. for mixed params, only mean can be fixed."""
+        fixed_param_alpha = [x for x in fixed_params if x in self.dcm_spec.fixed_param_names]
+        fixed_param_zeta = [x for x in fixed_params if x in self.dcm_spec.mixed_param_names]
+        # TODO: log if param is in neither
 
-    def calculate_std_errors(self):
+        fixed_indeces = []
+        for fixed_param in fixed_param_alpha:
+            idx_var = np.where(np.array(self.dcm_spec.fixed_param_names) == fixed_param)[0]
+            assert idx_var.shape[0] > 0, f"fixed var for alpha {fixed_param} not found"
+            assert idx_var.shape[0] == 1, f"fixed var for alpha {fixed_param} found multiple times"
+            idx_var = idx_var[0]
+            fixed_indeces.append(idx_var)
+
+        # Note only mean fixed for now
+        idx_shift = len(self.dcm_spec.fixed_param_names)
+        for fixed_param in fixed_param_zeta:
+            idx_var = np.where(np.array(self.dcm_spec.mixed_param_names) == fixed_param)[0]
+            assert idx_var.shape[0] > 0, f"fixed var for zeta {fixed_param} not found"
+            assert idx_var.shape[0] == 1, f"fixed var for zeta {fixed_param} found multiple times"
+            idx_var = idx_var[0] + idx_shift
+            fixed_indeces.append(idx_var)
+
+        full_hessian[:, fixed_indeces] = torch.zeros_like(full_hessian[:, fixed_indeces])
+        full_hessian[fixed_indeces, :] = torch.zeros_like(full_hessian[fixed_indeces, :])
+        # the following makes std errors 1 for fixed params, numerically convenient and we'll ignore it in results
+        full_hessian[fixed_indeces, fixed_indeces] = torch.ones((len(fixed_indeces), len(fixed_indeces)))
+
+        return full_hessian
+
+    def calculate_std_errors(self, alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag, fixed_params):
         if self.dcm_spec.model_type == "MNL":
-            print("No std errors for MNL yet, just get rid of hstack in full_hession below")
-            return None
-        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Calculating std errors")
-        # if self.dcm_spec.model_type == 'MNL':
-        #    arg_nums_ = (0)
-        if self.zeta_cov_offdiag.shape == torch.Size([0]):
-            arg_nums_ = (0, 1, 2)
-        #    ll_partial = lambda x, y, z: self.loglikelihood(x, y, z, self.zeta_cov_offdiag)
-        #    hessian = torch.autograd.functional.hessian(ll_partial, (self.alpha_mu, self.zeta_mu, self.zeta_cov_diag))
+            ll_partial = lambda x: self.loglikelihood(x, zeta_mu, zeta_cov_diag, zeta_cov_offdiag)
+            hessian = torch.autograd.functional.hessian(ll_partial, (alpha_mu), create_graph=False)
+        elif self.include_correlations:
+            hessian = torch.autograd.functional.hessian(
+                self.loglikelihood, (alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag), create_graph=False
+            )
         else:
-            arg_nums_ = (0, 1, 2, 3)
-        hess_ = torch.func.hessian(self.loglikelihood, argnums=arg_nums_)(
-            self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag, False
-        )
-        full_hessian = torch.vstack([torch.hstack(x) for x in hess_])
-        stderr = torch.sqrt(torch.linalg.diagonal(torch.linalg.inv(full_hessian)))
-        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Done calculating std errors")
-        return stderr.detach().cpu().numpy()
+            ll_partial = lambda x, y, z: self.loglikelihood(x, y, z, zeta_cov_offdiag)
+            hessian = torch.autograd.functional.hessian(
+                ll_partial, (alpha_mu, zeta_mu, zeta_cov_diag), create_graph=False
+            )
+
+        with torch.no_grad():
+            if self.dcm_spec.model_type == "MNL":
+                full_hessian = hessian
+            else:
+                full_hessian = torch.vstack([torch.hstack(x) for x in hessian])
+
+            full_hessian = self.mask_hessian(full_hessian, fixed_params)
+
+            # This is defined in order of construction of nn.Parameters (same order as passed into loglikelihood)
+            stderr = torch.sqrt(torch.linalg.diagonal(torch.linalg.inv(full_hessian)))
+
+        return stderr
 
     def mask_fixed_parameters(self, fixed_params):
         """masks gradient of parameters specified in fixed_params. For random params, only the mean is masked for now."""
@@ -286,6 +347,8 @@ class TorchMXLMSLE(nn.Module):
         tolerance_change=1e-12,
         history_size=100,
         fixed_params=[],
+        redraw=False,
+        correlated_normal_draws=True,
     ):
 
         self.to(self.device)
@@ -317,17 +380,27 @@ class TorchMXLMSLE(nn.Module):
             objective = self.loglikelihood(self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag)
             objective.backward()
             self.mask_fixed_parameters(fixed_params)
+            # TODO: set up proper logging
+            print(f"alpha = {self.alpha_mu.detach().cpu().numpy().tolist()}")
+            if mxl.dcm_spec.model_type != "MNL":
+                print(f"zeta = {self.zeta_mu.detach().cpu().numpy().tolist()}")
+                print(f"zeta_cov_diag = {self.zeta_cov_diag.detach().cpu().numpy().tolist()}")
+                if mxl.include_correlations:
+                    print(f"zeta_cov_offdiag = {self.zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
+            print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  LL = {objective.item():.2f}")
+            self.loglik_values.append(objective.item())
             return objective
 
         optimizer.step(closure)
 
-        toc = time.time() - tic
-        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Optimization done, final LL = {self.loglik_val:.2f}")
-        # print('Elapsed time:', toc, '\n')
+        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Optimization done")
+        k = list(optimizer.__dict__["state"].keys())[0]
+        if optimizer.__dict__["state"][k]["n_iter"] == max_iter:
+            print("WARNING - maxiter reached without convergence!")
 
         # prepare python dictionary of results to output
         results = {}
-        results["Estimation time"] = toc
+        results["Estimation time"] = time.time() - tic
         results["Est. alpha"] = self.alpha_mu.detach().cpu().numpy()
         results["alpha_names"] = self.dcm_spec.fixed_param_names
         if self.dcm_spec.model_type != "MNL":
@@ -336,17 +409,25 @@ class TorchMXLMSLE(nn.Module):
             results["zeta_cov_offdiag"] = self.zeta_cov_offdiag.detach().cpu().numpy()
             results["zeta_names"] = self.dcm_spec.mixed_param_names
         results["Loglikelihood"] = self.loglik_val
-        if not skip_std_err:
-            results["stderr"] = self.calculate_std_errors()
         if len(self.log_normal_params):
             results["lognormal_params"] = self.log_normal_params
         results["fixed_params"] = fixed_params
         results["loglike_values"] = self.loglik_values
         # optimizer state info
         results["optimizer_settings"] = optimizer.defaults
-        k = list(optimizer.__dict__["state"].keys())[0]
         results["number_of_iterations"] = optimizer.__dict__["state"][k]["n_iter"]
         results["flat_grad"] = optimizer.state[k]["prev_flat_grad"].detach().cpu().numpy()
+        if not skip_std_err:
+            print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Calculating std errors")
+            results["stderr"] = (
+                self.calculate_std_errors(
+                    self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag, fixed_params
+                )
+                .detach()
+                .cpu()
+                .numpy()
+            )
+            print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Std errors done")
 
         return results
 
@@ -435,246 +516,3 @@ class TorchMXLMSLE(nn.Module):
             results["lognormal_params"] = self.log_normal_params
 
         return results
-
-
-def loglikelihood_jit(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
-
-    global mxl
-    if mxl.dcm_spec.model_type == "MNL":
-        beta_resp = mxl.gather_parameters_for_MNL_kernel(alpha_mu, None)
-        utilities = mxl.compute_utilities(beta_resp, mxl.train_x, mxl.alt_av_mat_cuda, mxl.alt_ids_cuda)
-        probs = td.Categorical(logits=utilities).log_prob(mxl.train_y.transpose(0, 1)).exp()  # log_prob works with mask
-        probs = torch.where(mxl.mask_cuda.T, probs, probs.new_ones(()))  # use mask to filter out missing menus
-        probs = probs.prod(axis=0)  # multiply probs over menus
-        loglik_total = probs.log().sum()
-    else:
-        # normal to draw variables from
-        # if mxl.redraw:
-        #    mxl.generate_draws()
-        # zeta_cov_tril = torch.zeros(
-        #    (mxl.num_mixed_params, mxl.num_mixed_params), dtype=mxl.torch_dtype, device=mxl.device
-        # )
-        # zeta_cov_tril[mxl.tril_indices_zeta[0], mxl.tril_indices_zeta[1]] = zeta_cov_offdiag
-        # zeta_cov_tril += torch.diag_embed(mxl.softplus(zeta_cov_diag))
-        # betas = mxl.uniform_normal_draws @ torch.tril(zeta_cov_tril) + zeta_mu
-
-        # betas by drawing for each random parameter independently, no correlations for now
-        betas = torch.zeros((mxl.num_resp, mxl.num_draws, mxl.num_mixed_params), dtype=mxl.torch_dtype, device=mxl.device)
-        for (idx, distribution_type) in enumerate(mxl.dcm_spec.mixed_params_distribution_types):
-            name = mxl.dcm_spec.mixed_param_names[idx]
-            # print(f"{name}: {distribution_type}")
-            if distribution_type == "normal":
-                draws_this_param = td.Normal(zeta_mu[idx], mxl.softplus(zeta_cov_diag[idx])).rsample(
-                    (mxl.num_resp, mxl.num_draws)
-                )
-            elif distribution_type == "lognormal":
-                draws_this_param = (
-                    -td.Normal(zeta_mu[idx], mxl.softplus(zeta_cov_diag[idx]))
-                    .rsample((mxl.num_resp, mxl.num_draws))
-                    .exp()
-                )
-            elif distribution_type == "gamma":
-                draws_this_param = -td.Gamma(zeta_mu[idx], mxl.softplus(zeta_cov_diag[idx])).rsample(
-                    (mxl.num_resp, mxl.num_draws)
-                )
-            # elif distribution_type == "inverse_gamma":
-            #    draws_this_param = - td.InverseGamma(zeta_mu[idx], zeta_cov_diag[idx]).rsample((mxl.num_resp,mxl.num_draws))
-            else:
-                raise ValueError(f"Distribution type {distribution_type} not implemented")
-            betas[:,:,idx] = draws_this_param
-
-        sampled_probs = torch.zeros(mxl.num_resp, device=mxl.device, dtype=mxl.torch_dtype)
-
-        for i in range(mxl.num_draws):
-            beta_resp = mxl.gather_parameters_for_MNL_kernel(alpha_mu, betas[:, i])
-            utilities = mxl.compute_utilities(beta_resp, mxl.train_x, mxl.alt_av_mat_cuda, mxl.alt_ids_cuda)
-            # TODO: maybe go from log_prob(choices).exp() to prob() and then select chosen options
-            probs = (
-                td.Categorical(logits=utilities).log_prob(mxl.train_y.transpose(0, 1)).exp()
-            )  # log_prob works with mask
-            probs = torch.where(mxl.mask_cuda.T, probs, probs.new_ones(()))  # use mask to filter out missing menus
-            sampled_probs += probs.prod(axis=0)  # multiply probs over menus
-
-        sampled_probs /= mxl.num_draws
-        loglik_total = sampled_probs.log().sum()
-
-    mxl.loglik_val = loglik_total
-
-    return -loglik_total
-
-
-def mask_hessian(full_hessian, fixed_params):
-    global mxl
-    """masks hessian to account for fixed params. for mixed params, only mean can be fixed."""
-    fixed_param_alpha = [x for x in fixed_params if x in mxl.dcm_spec.fixed_param_names]
-    fixed_param_zeta = [x for x in fixed_params if x in mxl.dcm_spec.mixed_param_names]
-    # TODO: log if param is in neither
-
-    fixed_indeces = []
-
-    for fixed_param in fixed_param_alpha:
-        idx_var = np.where(np.array(mxl.dcm_spec.fixed_param_names) == fixed_param)[0]
-        assert idx_var.shape[0] > 0, f"fixed var for alpha {fixed_param} not found"
-        assert idx_var.shape[0] == 1, f"fixed var for alpha {fixed_param} found multiple times"
-        idx_var = idx_var[0]
-        fixed_indeces.append(idx_var)
-
-    # Note only mean fixed for now
-    idx_shift = len(mxl.dcm_spec.fixed_param_names)
-    for fixed_param in fixed_param_zeta:
-        idx_var = np.where(np.array(mxl.dcm_spec.mixed_param_names) == fixed_param)[0]
-        assert idx_var.shape[0] > 0, f"fixed var for zeta {fixed_param} not found"
-        assert idx_var.shape[0] == 1, f"fixed var for zeta {fixed_param} found multiple times"
-        idx_var = idx_var[0] + idx_shift
-        fixed_indeces.append(idx_var)
-
-    full_hessian[:,fixed_indeces] = torch.zeros_like(full_hessian[:,fixed_indeces])
-    full_hessian[fixed_indeces,:] = torch.zeros_like(full_hessian[fixed_indeces,:])
-    # the following makes std errors 1 for fixed params, numerically convenient and we'll ignore it in results
-    full_hessian[fixed_indeces, fixed_indeces] = torch.ones((len(fixed_indeces), len(fixed_indeces)))
-
-    return full_hessian
-
-
-def calculate_std_errors(alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag, fixed_params):
-    global mxl
-    if mxl.dcm_spec.model_type == "MNL":
-        ll_partial = lambda x: loglikelihood_jit(x, zeta_mu, zeta_cov_diag, zeta_cov_offdiag)
-        hessian = torch.autograd.functional.hessian(ll_partial, (alpha_mu), create_graph=False)
-    elif mxl.include_correlations:
-        hessian = torch.autograd.functional.hessian(
-            loglikelihood_jit, (alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag), create_graph=False
-        )
-    else:
-        ll_partial = lambda x, y, z: loglikelihood_jit(x, y, z, zeta_cov_offdiag)
-        hessian = torch.autograd.functional.hessian(ll_partial, (alpha_mu, zeta_mu, zeta_cov_diag), create_graph=False)
-
-    with torch.no_grad():
-        if mxl.dcm_spec.model_type == "MNL":
-            full_hessian = hessian
-        else:
-            full_hessian = torch.vstack([torch.hstack(x) for x in hessian])
-
-        full_hessian = mask_hessian(full_hessian, fixed_params)
-
-        # This is defined in order of construction of nn.Parameters (same order as passed into loglikelihood)
-        stderr = torch.sqrt(torch.linalg.diagonal(torch.linalg.inv(full_hessian)))
-
-    return stderr
-
-
-# TODO: Quick hack to work around jit problems at module level, use jit.Module and remove this
-def infer_jit(
-    mxl,
-    max_iter=500,
-    seed=None,
-    skip_std_err=False,
-    tolerance_grad=1e-9,
-    tolerance_change=1e-12,
-    history_size=100,
-    fixed_params=[],
-    redraw=False,
-    correlated_normal_draws=True,
-    jit=True,
-):
-
-    globals()["mxl"] = mxl
-    mxl.to(mxl.device)
-    mxl.train()  # enable training mode
-    mxl.loglik_values = []
-
-    optimizer = LBFGS(
-        mxl.parameters(),
-        max_iter=max_iter,
-        line_search_fn="strong_wolfe",
-        tolerance_grad=tolerance_grad,
-        tolerance_change=tolerance_change,
-        history_size=history_size,
-    )
-
-    if seed is not None:
-        mxl.seed = int(seed)
-    torch.manual_seed(mxl.seed)
-    mxl.redraw = redraw
-    mxl.correlated_normal_draws = correlated_normal_draws
-
-    tic = time.time()
-
-    # if mxl.dcm_spec.model_type != "MNL":
-    #    print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Generating draws")
-    #    mxl.generate_draws()
-
-    if jit:
-        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  JIT start")
-        if mxl.dcm_spec.model_type != "MNL":
-            example_input = (
-                torch.ones_like(mxl.alpha_mu),
-                torch.ones_like(mxl.zeta_mu),
-                torch.ones_like(mxl.zeta_cov_diag),
-                torch.zeros_like(mxl.zeta_cov_offdiag),
-            )
-        else:
-            example_input = (
-                torch.zeros_like(mxl.alpha_mu),
-                torch.zeros(1),
-                torch.zeros(1),
-                torch.zeros(1),
-            )
-        traced_loglikelihood = torch.jit.trace(loglikelihood_jit, example_input, check_trace=False)
-        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  JIT done")
-    else:
-        traced_loglikelihood = loglikelihood_jit
-
-    def closure():
-        optimizer.zero_grad()
-        if not mxl.redraw:
-            torch.manual_seed(mxl.seed)  # needs to be outsided traced function
-        objective = traced_loglikelihood(mxl.alpha_mu, mxl.zeta_mu, mxl.zeta_cov_diag, mxl.zeta_cov_offdiag)
-        objective.backward()
-        mxl.mask_fixed_parameters(fixed_params)
-        # TODO: set up proper logging
-        print(f"alpha = {mxl.alpha_mu.detach().cpu().numpy().tolist()}")
-        if mxl.dcm_spec.model_type != "MNL":
-            print(f"zeta = {mxl.zeta_mu.detach().cpu().numpy().tolist()}")
-            print(f"zeta_cov_diag = {mxl.zeta_cov_diag.detach().cpu().numpy().tolist()}")
-            if mxl.include_correlations:
-                print(f"zeta_cov_offdiag = {mxl.zeta_cov_offdiag.detach().cpu().numpy().tolist()}\n")
-        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  LL = {objective.item():.2f}")
-        mxl.loglik_values.append(objective.item())
-        return objective
-
-    optimizer.step(closure)
-
-    print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Optimization done")
-    k = list(optimizer.__dict__["state"].keys())[0]
-    if optimizer.__dict__["state"][k]["n_iter"] == max_iter:
-        print("WARNING - maxiter reached without convergence!")
-
-    # prepare python dictionary of results to output
-    results = {}
-    results["Estimation time"] = time.time() - tic
-    results["Est. alpha"] = mxl.alpha_mu.detach().cpu().numpy()
-    results["alpha_names"] = mxl.dcm_spec.fixed_param_names
-    if mxl.dcm_spec.model_type != "MNL":
-        results["Est. zeta"] = mxl.zeta_mu.detach().cpu().numpy()
-        results["zeta_cov_diag"] = mxl.zeta_cov_diag.detach().cpu().numpy()
-        results["zeta_cov_offdiag"] = mxl.zeta_cov_offdiag.detach().cpu().numpy()
-        results["zeta_names"] = mxl.dcm_spec.mixed_param_names
-    results["Loglikelihood"] = mxl.loglik_val.item()
-    if len(mxl.log_normal_params):
-        results["lognormal_params"] = mxl.log_normal_params
-    results["fixed_params"] = fixed_params
-    results["loglike_values"] = mxl.loglik_values
-    # optimizer state info
-    results["optimizer_settings"] = optimizer.defaults
-    results["number_of_iterations"] = optimizer.__dict__["state"][k]["n_iter"]
-    results["flat_grad"] = optimizer.state[k]["prev_flat_grad"].detach().cpu().numpy()
-
-    if not skip_std_err:
-        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Calculating std errors")
-        results["stderr"] = (
-            calculate_std_errors(mxl.alpha_mu, mxl.zeta_mu, mxl.zeta_cov_diag, mxl.zeta_cov_offdiag, fixed_params).detach().cpu().numpy()
-        )
-        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Std errors done")
-
-    return results
