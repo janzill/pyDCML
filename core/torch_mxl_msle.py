@@ -66,8 +66,7 @@ class TorchMXLMSLE(nn.Module):
         num_draws=1000,
         use_cuda=True,
         use_double=False,
-        include_correlations=False,
-        log_normal_params=[],
+        # include_correlations=False,
     ):
         super(TorchMXLMSLE, self).__init__()
 
@@ -101,8 +100,8 @@ class TorchMXLMSLE(nn.Module):
         self.seed = 1234567
         self.redraw = False
         # self.correlated_normal_draws = False
-        self.include_correlations = include_correlations
-        self.log_normal_params = log_normal_params
+        self.num_correlated_params = len(dcm_dataset.dcm_spec.mixed_params_correlations)
+        self.include_correlations = self.num_correlated_params > 0
         self.loglik_values = []
 
         # prepare data for running inference
@@ -159,15 +158,23 @@ class TorchMXLMSLE(nn.Module):
         self.zeta_cov_diag = nn.Parameter(torch.ones(self.num_mixed_params, dtype=self.torch_dtype))
 
         if self.include_correlations:
+            # self.zeta_cov_offdiag = nn.Parameter(
+            #    torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2), dtype=self.torch_dtype)
+            # )
             self.zeta_cov_offdiag = nn.Parameter(
-                torch.zeros(int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2), dtype=self.torch_dtype)
+                torch.zeros(
+                    int((self.num_correlated_params * (self.num_correlated_params - 1)) / 2), dtype=self.torch_dtype
+                )
+            )
+            self.tril_indices_zeta = torch.tril_indices(
+                row=self.num_correlated_params, col=self.num_correlated_params, offset=-1
             )
         else:
-            self.zeta_cov_offdiag = torch.zeros(
-                int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2), dtype=self.torch_dtype
-            )
-
-        self.tril_indices_zeta = torch.tril_indices(row=self.num_mixed_params, col=self.num_mixed_params, offset=-1)
+            self.zeta_cov_offdiag = None
+            # torch.zeros(
+            #    int((self.num_mixed_params * (self.num_mixed_params - 1)) / 2), dtype=self.torch_dtype
+            # )
+            self.tril_indices_zeta = None
 
     # def generate_draws(self):
     #     if self.correlated_normal_draws:
@@ -201,8 +208,14 @@ class TorchMXLMSLE(nn.Module):
         betas = torch.zeros(
             (self.num_resp, self.num_draws, self.num_mixed_params), dtype=self.torch_dtype, device=self.device
         )
+
+        # Go through all but correlated
+        correlated_idxs = []
         for idx, distribution_type in enumerate(self.dcm_spec.mixed_params_distribution_types):
             name = self.dcm_spec.mixed_param_names[idx]
+            if name in self.dcm_dataset.dcm_spec.mixed_params_correlations:
+                correlated_idxs.append(idx)
+                continue
             # print(f"{name}: {distribution_type}")
             if distribution_type == "normal":
                 draws_this_param = td.Normal(zeta_mu[idx], self.softplus(zeta_cov_diag[idx])).rsample(
@@ -223,6 +236,23 @@ class TorchMXLMSLE(nn.Module):
             else:
                 raise ValueError(f"Distribution type {distribution_type} not implemented")
             betas[:, :, idx] = draws_this_param
+
+        if not self.include_correlations:
+            assert len(correlated_idxs) == 0
+            return betas
+
+        # now draw correlated betas, assumend to be one multi-variate normal for now
+        assert (betas[:, :, correlated_idxs] == 0).all()
+        zeta_cov_tril = torch.zeros(
+            (self.num_correlated_params, self.num_correlated_params), dtype=self.torch_dtype, device=self.device
+        )
+        zeta_cov_tril[self.tril_indices_zeta[0], self.tril_indices_zeta[1]] = zeta_cov_offdiag
+        zeta_cov_tril += torch.diag_embed(self.softplus(zeta_cov_diag[correlated_idxs]))
+        betas_corr = td.MultivariateNormal(zeta_mu[correlated_idxs], scale_tril=torch.tril(zeta_cov_tril)).rsample(
+            sample_shape=torch.Size([self.num_resp, self.num_draws])
+        )
+        betas[:, :, correlated_idxs] = betas_corr
+
         return betas
 
     def loglikelihood(self, alpha_mu, zeta_mu, zeta_cov_diag, zeta_cov_offdiag):
@@ -401,10 +431,11 @@ class TorchMXLMSLE(nn.Module):
         if self.dcm_spec.model_type != "MNL":
             results["Est. zeta"] = self.zeta_mu.detach().cpu().numpy()
             results["zeta_cov_diag"] = self.zeta_cov_diag.detach().cpu().numpy()
-            results["zeta_cov_offdiag"] = self.zeta_cov_offdiag.detach().cpu().numpy()
             results["zeta_names"] = self.dcm_spec.mixed_param_names
-        if len(self.log_normal_params):
-            results["lognormal_params"] = self.log_normal_params
+            if self.include_correlations:
+                results["zeta_cov_offdiag"] = self.zeta_cov_offdiag.detach().cpu().numpy()
+        # if len(self.log_normal_params):
+        #    results["lognormal_params"] = self.log_normal_params
         results["fixed_params"] = fixed_params
         results["loglike_values"] = self.loglik_values
         # optimizer state info
@@ -451,12 +482,7 @@ class TorchMXLMSLE(nn.Module):
                     reordered_pars.append(alpha_resp[:, next_fixed].unsqueeze(-1))
                     next_fixed += 1
                 elif par_id in self.dcm_spec.mixed_param_ids:
-                    # experiment with log-normal params (assumed to be negative here)
-                    if self.dcm_spec.mixed_param_names[next_mixed] in self.log_normal_params:
-                        # print(f"log normal: {par_id}")
-                        reordered_pars.append(-beta[:, next_mixed].unsqueeze(-1).exp())
-                    else:
-                        reordered_pars.append(beta[:, next_mixed].unsqueeze(-1))
+                    reordered_pars.append(beta[:, next_mixed].unsqueeze(-1))
                     next_mixed += 1
                 else:
                     raise Exception("This should not happen - check if effect names are unique.")

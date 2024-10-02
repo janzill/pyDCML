@@ -95,9 +95,10 @@ class FixedEffect(Variable):
 
 class RandomEffect(Variable):
 
-    def __init__(self, name, initial_value=0.0, distribution="normal"):
+    def __init__(self, name, initial_value=0.0, distribution="normal", correlation=None):
         super().__init__(name)
         self.distribution = distribution
+        self.correlation = correlation
         if (self.distribution == "gamma") and (initial_value == 0.0):
             self.initial_value = 1.0
         else:
@@ -147,6 +148,7 @@ class Specification():
         self.fixed_params_initial_values = []
         self.mixed_params_initial_values = []
         self.mixed_params_distribution_types = []
+        self.mixed_params_correlations = []  # make this single list for now, only allowing one type of correlation
         next_param_id = 0
         next_alt_id = 0
         for alt in self.utilities:
@@ -182,6 +184,8 @@ class Specification():
                                 self.mixed_param_ids.append(self.random_var_to_param_id[factor])
                                 self.mixed_params_initial_values.append(factor.initial_value)
                                 self.mixed_params_distribution_types.append(factor.distribution)
+                                if not factor.correlation is None:
+                                    self.mixed_params_correlations.append(factor.name)
                     else:
                         attributes.append(factor)
                         self.columns_to_extract += [factor]
