@@ -241,7 +241,7 @@ class TorchMXLMSLE(nn.Module):
             assert len(correlated_idxs) == 0
             return betas
 
-        # now draw correlated betas, assumend to be one multi-variate normal for now
+        # now draw correlated betas, assumed to be one multi-variate normal for now
         assert (betas[:, :, correlated_idxs] == 0).all()
         zeta_cov_tril = torch.zeros(
             (self.num_correlated_params, self.num_correlated_params), dtype=self.torch_dtype, device=self.device
@@ -444,15 +444,18 @@ class TorchMXLMSLE(nn.Module):
         results["flat_grad"] = optimizer.state[k]["prev_flat_grad"].detach().cpu().numpy()
         if not skip_std_err:
             print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Calculating std errors")
-            results["stderr"] = (
-                self.calculate_std_errors(
-                    self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag, fixed_params
+            try:
+                results["stderr"] = (
+                    self.calculate_std_errors(
+                        self.alpha_mu, self.zeta_mu, self.zeta_cov_diag, self.zeta_cov_offdiag, fixed_params
+                    )
+                    .detach()
+                    .cpu()
+                    .numpy()
                 )
-                .detach()
-                .cpu()
-                .numpy()
-            )
-            print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Std errors done")
+                print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Std errors done")
+            except Exception as e:
+                print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  -  Std errors failed: {e}. Might hint at identification issues")
 
         return results
 
